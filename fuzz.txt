@@ -1,0 +1,3 @@
+/pdfjs/web/viewer.html?file=
+/web/viewer.html?file=
+/viewer.html?file=
