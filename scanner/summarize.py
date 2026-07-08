@@ -102,7 +102,11 @@ def main() -> int:
     errors = []
     error_path = root / "errors.log"
     if error_path.is_file():
-        errors = [line.strip() for line in error_path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+        errors = [
+            line.strip()
+            for line in error_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if line.strip()
+        ]
 
     summary = {
         "targets": target_counts,
@@ -111,6 +115,7 @@ def main() -> int:
         "open_services": line_count(root / "open-services.txt"),
         "live_urls": line_count(root / "live-urls.txt"),
         "crawled_urls": line_count(root / "katana.txt"),
+        "sourcemaps": line_count(root / "sourcemaps.jsonl"),
         "total_scan_urls": line_count(root / "scan-urls.txt"),
         "nuclei_findings": ordered(nuclei),
         "afrog_findings": ordered(afrog),
@@ -132,6 +137,7 @@ def main() -> int:
         f"- 开放服务：{summary['open_services']}",
         f"- 存活 URL：{summary['live_urls']}",
         f"- 爬取 URL：{summary['crawled_urls']}",
+        f"- Sourcemap 泄露：{summary['sourcemaps']}",
         f"- 最终漏洞扫描 URL：{summary['total_scan_urls']}",
         "",
         "## Nuclei",
@@ -148,12 +154,15 @@ def main() -> int:
     else:
         lines.append("- 未发现结果或该阶段未成功运行")
 
-    lines.extend([
-        "",
-        "## 高价值路径",
-        "",
-        f"- ffuf 命中：{summary['ffuf_findings']}",
-    ])
+    lines.extend(
+        [
+            "",
+            "## 高价值暴露",
+            "",
+            f"- Sourcemap 命中：{summary['sourcemaps']}",
+            f"- ffuf 命中：{summary['ffuf_findings']}",
+        ]
+    )
     if summary["ffuf_statuses"]:
         lines.extend(f"- HTTP {key}: {value}" for key, value in summary["ffuf_statuses"].items())
 
