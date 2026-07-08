@@ -27,8 +27,19 @@ def normalize_url(value: str) -> tuple[str, str] | None:
         return None
 
     host = parsed.hostname.lower().rstrip(".")
-    port = f":{parsed.port}" if parsed.port else ""
-    netloc = f"{host}{port}"
+    host_for_netloc = host
+    try:
+        if ipaddress.ip_address(host).version == 6:
+            host_for_netloc = f"[{host}]"
+    except ValueError:
+        pass
+
+    try:
+        port = f":{parsed.port}" if parsed.port else ""
+    except ValueError:
+        return None
+
+    netloc = f"{host_for_netloc}{port}"
     normalized = urlunsplit(
         (parsed.scheme.lower(), netloc, parsed.path or "/", parsed.query, "")
     )
@@ -52,8 +63,9 @@ def classify(value: str) -> tuple[str, str] | None:
 
     candidate = value.rstrip(".")
     try:
-        network = ipaddress.ip_network(candidate, strict=False)
-        return ("cidr" if "/" in candidate else "ip"), str(network)
+        if "/" in candidate:
+            return "cidr", str(ipaddress.ip_network(candidate, strict=False))
+        return "ip", str(ipaddress.ip_address(candidate))
     except ValueError:
         pass
 
