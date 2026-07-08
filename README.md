@@ -14,7 +14,7 @@ ARL的安装这里就不多赘述了，可以看这里 https://github.com/ki9mu/
 6. 更改文件泄露错误异常的判断，随机化，绕过waf和NIDS检测等
 7. 增加文件泄露扫描发现字典项数
 8. 放出自用POC，总计245个，部分POC可能感觉没用可以删除
-9. 没了...(有需求提issue，视情况开发)
+9. 增加 MCP 服务，让支持 MCP 的 AI 客户端查询 ARL 资产、汇总结果，并在明确开启写权限后提交、停止、重启任务
 
 # 安装方式
 首次安装：
@@ -24,10 +24,138 @@ docker volume create arl_db
 更新安装
 ```
 docker-compose down
-docker-compose up -d
+docker-compose up -d --build
 ```
 PS:
 由于近期dockerHub问题，现将相关镜像放到网盘，可解压为.tar文件后执行`docker load -i xxx.tar`即可部署，可在公众号回复`ARL-plus`获取地址
+
+# MCP：让 AI 连接并操作 ARL
+
+MCP 服务使用 ARL 官方 REST API，不直接写 MongoDB，也不绕过 Celery/任务状态机。默认仅监听宿主机 `127.0.0.1:5013`、强制 Bearer Token，并启用只读模式。
+
+## 1. 配置 ARL API Key
+
+编辑 `config-docker.yaml`，为 `ARL.API_KEY` 设置一个长随机值：
+
+```yaml
+ARL:
+  AUTH: true
+  API_KEY: "替换为至少32字节的随机字符串"
+```
+
+也可以不改 YAML，改用 `.env` 中的 `ARL_API_KEY`、`ARL_TOKEN`，或 `ARL_USERNAME`/`ARL_PASSWORD`。优先级为：
+
+1. `ARL_TOKEN`
+2. `ARL_API_KEY`
+3. `config-docker.yaml` 的 `ARL.API_KEY`
+4. `ARL_USERNAME` / `ARL_PASSWORD` 登录取得 token
+
+## 2. 创建 MCP 环境配置
+
+```bash
+cp .env.example .env
+vim .env
+```
+
+建议设置：
+
+```dotenv
+MCP_TOKEN=替换为至少32字节的随机字符串
+ARL_API_KEY=与config-docker.yaml中的ARL.API_KEY一致
+MCP_READ_ONLY=true
+```
+
+`MCP_TOKEN` 留空也可以。容器首次启动会自动生成 token，保存在 Docker 卷 `arl_mcp_data` 中。
+
+## 3. 启动
+
+```bash
+docker-compose up -d --build mcp
+```
+
+检查状态：
+
+```bash
+docker-compose ps mcp
+curl http://127.0.0.1:5013/healthz
+```
+
+查看自动生成的 MCP Token：
+
+```bash
+docker-compose exec mcp cat /data/token
+```
+
+MCP 地址：
+
+```text
+http://127.0.0.1:5013/mcp
+```
+
+客户端请求头：
+
+```text
+Authorization: Bearer <MCP_TOKEN>
+```
+
+也兼容：
+
+```text
+X-MCP-Token: <MCP_TOKEN>
+```
+
+## 4. 开放任务操作
+
+默认 `MCP_READ_ONLY=true`，AI 只能查询。确认连接和权限均正确后，再修改 `.env`：
+
+```dotenv
+MCP_READ_ONLY=false
+```
+
+然后重启：
+
+```bash
+docker-compose up -d --force-recreate mcp
+```
+
+写模式只开放：
+
+- 提交资产侦察任务
+- 停止任务
+- 重启已结束、已停止或失败的任务
+
+没有开放删除任务、任意 HTTP 代理或直接 MongoDB 写入工具。
+
+## 5. 已提供的 MCP 工具
+
+- `arl_health`：检查 ARL 连通性和认证状态
+- `arl_list_tasks`：查询任务列表
+- `arl_get_task`：读取任务详情
+- `arl_query_assets`：查询域名、IP、站点、URL、漏洞、Nuclei、文件泄露等结果
+- `arl_task_summary`：汇总一个任务的各类结果数量
+- `arl_submit_task`：提交任务，要求写模式
+- `arl_stop_task`：停止任务，要求写模式
+- `arl_restart_task`：重启任务，要求写模式
+
+## 6. AI 客户端示例
+
+支持 Streamable HTTP MCP 的客户端均连接：
+
+```text
+URL: http://127.0.0.1:5013/mcp
+Header: Authorization: Bearer <MCP_TOKEN>
+```
+
+例如 Claude Code 可按其 HTTP MCP 配置方式添加该地址。不同客户端的配置字段名称可能不同，但 URL 和 Bearer Token 不变。
+
+## 7. 远程连接安全要求
+
+默认不要把 `5013` 直接暴露到公网。需要远程连接时：
+
+1. 使用可信隧道、VPN，或带 TLS 的 Nginx/Caddy 反向代理。
+2. 再把 `.env` 中的 `MCP_BIND_IP` 改为 `0.0.0.0`。
+3. 必须保留 `MCP_ALLOW_UNAUTHENTICATED=false`，并使用高强度 `MCP_TOKEN`。
+4. 首次接入建议保持 `MCP_READ_ONLY=true`。
 
 # 分布式安装方式
 参考文章： https://mp.weixin.qq.com/s/0q4WLmVWGW6VQpZnRx9EUA
