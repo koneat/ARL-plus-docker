@@ -1,0 +1,54 @@
+name: validate
+
+on:
+  push:
+    branches:
+      - main
+      - feat/**
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate shell syntax
+        run: |
+          bash -n scripts/safe-next-up.sh
+          bash -n scripts/safe-next-rollback.sh
+
+      - name: Validate MCP source
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r mcp/requirements.txt
+          python -m py_compile mcp/server.py
+
+      - name: Validate Compose configuration
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.next.yml --profile next config >/tmp/arl-compose.rendered.yml
+          grep -q '127.0.0.1' /tmp/arl-compose.rendered.yml
+
+      - name: Validate Nginx configuration
+        run: |
+          docker run --rm \
+            -v "$PWD/next/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            nginx:1.27-alpine nginx -t
+
+      - name: Enforce non-destructive safety rules
+        run: |
+          ! grep -R --line-number --fixed-strings 'down -v' scripts docker-compose.next.yml next
+          ! grep -R --line-number --fixed-strings 'mcp-local:5013' next
+          grep -q 'MCP_ALLOW_UNAUTHENTICATED=false' docker-compose.yml
+          grep -q 'NEXT_GATEWAY_BIND_IP:-127.0.0.1' docker-compose.next.yml
