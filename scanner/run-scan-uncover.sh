@@ -13,6 +13,7 @@ PROVIDER_CONFIG="${UNCOVER_PROVIDER_CONFIG:-/run/secrets/uncover-provider.yaml}"
 AUGMENTED_TARGETS="/tmp/arl-uncover-targets-${SCAN_ID}.txt"
 NUCLEI_EXTRA_TARGETS="/tmp/arl-nuclei-extra-${SCAN_ID}.txt"
 UNCOVER_FAILED=false
+NUCLEI_REQUESTED="${ENABLE_NUCLEI:-true}"
 
 log() {
   printf '[scanner-plus][%s] %s\n' "$(date '+%F %T')" "$*"
@@ -127,6 +128,17 @@ ensure_nuclei_templates() {
   local template_dir="${NUCLEI_TEMPLATE_DIR:-/root/nuclei-templates}"
   local minimum="${NUCLEI_TEMPLATE_MIN_COUNT:-50}"
   local count=0
+
+  if ! enabled "$NUCLEI_REQUESTED"; then
+    {
+      echo "enabled=false"
+      echo "template_dir=${template_dir}"
+      echo "template_count=0"
+      echo "minimum_expected=${minimum}"
+    } >"$OUT/nuclei-template-status.txt"
+    return 0
+  fi
+
   if [[ -d "$template_dir" ]]; then
     count="$(find "$template_dir" -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | wc -l | tr -d ' ')"
   fi
@@ -136,6 +148,7 @@ ensure_nuclei_templates() {
     count="$(find "$template_dir" -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | wc -l | tr -d ' ')"
   fi
   {
+    echo "enabled=true"
     echo "template_dir=${template_dir}"
     echo "template_count=${count}"
     echo "minimum_expected=${minimum}"
@@ -164,7 +177,19 @@ resolve_nuclei_policy() {
   printf '%s' "$policy"
 }
 
-run_nuclei_extra_pass() {
+resolve_general_nuclei_severity() {
+  if [[ -n "${NUCLEI_SEVERITY_OVERRIDE:-}" ]]; then
+    printf '%s' "$NUCLEI_SEVERITY_OVERRIDE"
+    return 0
+  fi
+  case "$MODE" in
+    fast) printf 'high,critical' ;;
+    standard) printf 'medium,high,critical' ;;
+    deep) printf 'low,medium,high,critical' ;;
+  esac
+}
+
+run_nuclei_pass() {
   local name="$1"
   local output="$2"
   local logfile="$3"
@@ -179,7 +204,7 @@ run_nuclei_extra_pass() {
   if nuclei \
     -l "$targets" \
     -silent -jsonl \
-    -severity "${NUCLEI_EXTRA_SEVERITY:-info,low,medium,high,critical}" \
+    -severity "${NUCLEI_PASS_SEVERITY:-info,low,medium,high,critical}" \
     -exclude-tags "${NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}" \
     -rate-limit "${NUCLEI_RATE_LIMIT:-120}" \
     -concurrency "${NUCLEI_EXTRA_CONCURRENCY:-20}" \
@@ -196,7 +221,7 @@ run_nuclei_extra_pass() {
 }
 
 run_nuclei_enhancements() {
-  if ! enabled "${ENABLE_NUCLEI:-true}"; then
+  if ! enabled "$NUCLEI_REQUESTED"; then
     return 0
   fi
 
@@ -210,18 +235,37 @@ run_nuclei_enhancements() {
     "$OUT/webhook-endpoints.txt" 2>/dev/null | \
     sed '/^[[:space:]]*$/d' | sort -u >"$NUCLEI_EXTRA_TARGETS"
 
-  local policy
+  local policy general_severity
   policy="$(resolve_nuclei_policy)"
+  general_severity="$(resolve_general_nuclei_severity)"
   echo "nuclei_policy=${policy}" >>"$OUT/manifest.txt"
+  echo "nuclei_general_severity=${general_severity}" >>"$OUT/manifest.txt"
   echo "nuclei_exclude_tags=${NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}" >>"$OUT/manifest.txt"
 
+  : >"$OUT/nuclei.official.jsonl"
+  : >"$OUT/nuclei.custom.jsonl"
   : >"$OUT/nuclei.automatic.jsonl"
   : >"$OUT/nuclei.exposure.jsonl"
   : >"$OUT/nuclei.api.jsonl"
 
+  NUCLEI_PASS_SEVERITY="$general_severity" run_nuclei_pass \
+    "Nuclei 官方模板扫描" \
+    "$OUT/nuclei.official.jsonl" \
+    "$OUT/nuclei.official.log" \
+    "$OUT/scan-urls.txt"
+
+  if find /opt/pocs/nuclei -type f \( -name '*.yaml' -o -name '*.yml' \) -print -quit | grep -q .; then
+    NUCLEI_PASS_SEVERITY="$general_severity" run_nuclei_pass \
+      "Nuclei 自定义模板扫描" \
+      "$OUT/nuclei.custom.jsonl" \
+      "$OUT/nuclei.custom.log" \
+      "$OUT/scan-urls.txt" \
+      -t /opt/pocs/nuclei
+  fi
+
   if [[ "$policy" != "off" ]]; then
     if [[ "$policy" == "balanced" || "$policy" == "deep" ]] && enabled "${ENABLE_NUCLEI_AUTOMATIC:-true}"; then
-      run_nuclei_extra_pass \
+      NUCLEI_PASS_SEVERITY="$general_severity" run_nuclei_pass \
         "Nuclei 技术栈自动策略扫描" \
         "$OUT/nuclei.automatic.jsonl" \
         "$OUT/nuclei.automatic.log" \
@@ -230,7 +274,7 @@ run_nuclei_enhancements() {
     fi
 
     if enabled "${ENABLE_NUCLEI_EXPOSURE:-true}"; then
-      run_nuclei_extra_pass \
+      NUCLEI_PASS_SEVERITY="${NUCLEI_EXTRA_SEVERITY:-info,low,medium,high,critical}" run_nuclei_pass \
         "Nuclei 文件泄露与错误配置专项" \
         "$OUT/nuclei.exposure.jsonl" \
         "$OUT/nuclei.exposure.log" \
@@ -239,7 +283,7 @@ run_nuclei_enhancements() {
     fi
 
     if enabled "${ENABLE_NUCLEI_API:-true}" && [[ -s "$NUCLEI_EXTRA_TARGETS" ]]; then
-      run_nuclei_extra_pass \
+      NUCLEI_PASS_SEVERITY="${NUCLEI_EXTRA_SEVERITY:-info,low,medium,high,critical}" run_nuclei_pass \
         "Nuclei API/HTTP/Webhook 调用面专项" \
         "$OUT/nuclei.api.jsonl" \
         "$OUT/nuclei.api.log" \
@@ -271,7 +315,11 @@ cat \
   "$OUT/uncover-urls.txt" 2>/dev/null | \
   sed '/^[[:space:]]*$/d' | sort -u >"$AUGMENTED_TARGETS"
 
+if enabled "$NUCLEI_REQUESTED"; then
+  export ENABLE_NUCLEI=false
+fi
 /opt/scanner/run-scan.sh "$AUGMENTED_TARGETS" "$MODE"
+export ENABLE_NUCLEI="$NUCLEI_REQUESTED"
 run_nuclei_enhancements
 
 {
