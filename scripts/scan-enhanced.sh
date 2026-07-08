@@ -59,7 +59,9 @@ mkdir -p \
   scanner-cache/config \
   scanner-cache/nuclei-templates \
   scanner-pocs/nuclei \
-  scanner-pocs/afrog
+  scanner-pocs/afrog \
+  scanner-secrets
+chmod 700 scanner-secrets 2>/dev/null || true
 
 COMPOSE=(
   docker compose
@@ -75,7 +77,7 @@ fi
 "${COMPOSE[@]}" run --rm \
   --volume "$TARGET_ABS:/work/input/targets.txt:ro" \
   scanner \
-  /opt/scanner/run-scan.sh /work/input/targets.txt "$MODE"
+  /opt/scanner/run-scan-uncover.sh /work/input/targets.txt "$MODE"
 
 if [[ -L scan-results/latest ]]; then
   latest="$(readlink scan-results/latest)"
