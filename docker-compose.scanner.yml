@@ -24,6 +24,7 @@ services:
       ENABLE_SUBFINDER: ${ENABLE_SUBFINDER:-true}
       ENABLE_NAABU: ${ENABLE_NAABU:-true}
       ENABLE_KATANA: ${ENABLE_KATANA:-true}
+      ENABLE_SOURCEMAP: ${ENABLE_SOURCEMAP:-true}
       ENABLE_NUCLEI: ${ENABLE_NUCLEI:-true}
       ENABLE_AFROG: ${ENABLE_AFROG:-true}
       ENABLE_FFUF: ${ENABLE_FFUF:-true}
@@ -32,6 +33,11 @@ services:
       NAABU_RATE: ${NAABU_RATE:-500}
       FFUF_RATE: ${FFUF_RATE:-50}
       FFUF_MAX_TARGETS: ${FFUF_MAX_TARGETS:-100}
+      CUSTOM_PORTS: ${CUSTOM_PORTS:-}
+      TOP_PORTS_OVERRIDE: ${TOP_PORTS_OVERRIDE:-}
+      SCAN_URL_LIMIT_OVERRIDE: ${SCAN_URL_LIMIT_OVERRIDE:-}
+      NUCLEI_SEVERITY_OVERRIDE: ${NUCLEI_SEVERITY_OVERRIDE:-}
+      AFROG_SEVERITY_OVERRIDE: ${AFROG_SEVERITY_OVERRIDE:-}
     volumes:
       - ./scan-results:/work/results
       - ./scanner-cache/config:/root/.config
