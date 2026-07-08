@@ -53,9 +53,19 @@ rollback_gateway() {
   "${DC[@]}" rm -sf next-gateway >/dev/null 2>&1 || true
 }
 
-trap 'log "启动失败，执行隔离回滚"; rollback_gateway' ERR
+gateway_start_attempted=false
+cleanup_on_exit() {
+  status=$?
+  if [[ $status -ne 0 && "$gateway_start_attempted" == "true" ]]; then
+    log "启动失败，执行隔离回滚"
+    rollback_gateway
+  fi
+  exit "$status"
+}
+trap cleanup_on_exit EXIT
 
 log "启动可选 next-gateway；使用 --no-deps，禁止重建核心服务"
+gateway_start_attempted=true
 "${DC[@]}" up -d --no-deps next-gateway
 
 healthy=false
@@ -72,7 +82,7 @@ if [[ "$healthy" != "true" ]]; then
   fail "next-gateway 健康检查失败"
 fi
 
-trap - ERR
+trap - EXIT
 log "启动成功：http://127.0.0.1:${GATEWAY_PORT}"
 log "现有 5003、5013、5014 和全部核心容器均未修改"
 log "需要撤销时执行：bash scripts/safe-next-rollback.sh"
