@@ -116,7 +116,6 @@ else
 fi
 
 cat "$OUT/domains.txt" "$OUT/subfinder.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/domains.all.txt"
-cat "$OUT/hosts.txt" "$OUT/domains.all.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/hosts.all.txt"
 
 dnsx_stage() {
   : >"$OUT/dnsx.jsonl"
@@ -130,7 +129,9 @@ if [[ -s "$OUT/dnsx.jsonl" ]]; then
 else
   : >"$OUT/dnsx.hosts.txt"
 fi
-cat "$OUT/hosts.all.txt" "$OUT/dnsx.hosts.txt" | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/portscan.targets.txt"
+
+cat "$OUT/domains.all.txt" "$OUT/ips.txt" "$OUT/cidrs.txt" 2>/dev/null | \
+  sed '/^[[:space:]]*$/d' | sort -u >"$OUT/portscan.targets.txt"
 
 naabu_stage() {
   : >"$OUT/naabu.jsonl"
@@ -218,29 +219,32 @@ fi
 sourcemap_stage() {
   : >"$OUT/sourcemap-candidates.txt"
   : >"$OUT/sourcemaps.jsonl"
-  cat "$OUT/live-urls.txt" "$OUT/katana.txt" 2>/dev/null | python3 - "$OUT/sourcemap-candidates.txt" <<'PY'
+  python3 - "$OUT/live-urls.txt" "$OUT/katana.txt" "$OUT/sourcemap-candidates.txt" <<'PY'
 import sys
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-output = sys.argv[1]
+source_paths = [Path(sys.argv[1]), Path(sys.argv[2])]
+output = Path(sys.argv[3])
 seen = set()
-for raw in sys.stdin:
-    value = raw.strip()
-    if not value:
+for source_path in source_paths:
+    if not source_path.is_file():
         continue
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        continue
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        continue
-    if not parsed.path.lower().endswith(".js"):
-        continue
-    candidate = urlunsplit((parsed.scheme, parsed.netloc, parsed.path + ".map", "", ""))
-    seen.add(candidate)
-with open(output, "w", encoding="utf-8") as handle:
-    for item in sorted(seen):
-        handle.write(item + "\n")
+    for raw in source_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        value = raw.strip()
+        if not value:
+            continue
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            continue
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        if not parsed.path.lower().endswith(".js"):
+            continue
+        candidate = urlunsplit((parsed.scheme, parsed.netloc, parsed.path + ".map", "", ""))
+        seen.add(candidate)
+output.write_text("".join(f"{item}\n" for item in sorted(seen)), encoding="utf-8")
 PY
   [[ -s "$OUT/sourcemap-candidates.txt" ]] || return 0
   httpx \
