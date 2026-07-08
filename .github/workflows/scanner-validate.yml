@@ -9,11 +9,13 @@ on:
       - 'scripts/scan-enhanced.sh'
       - 'SCANNER.md'
       - 'UNCOVER.md'
+      - 'NUCLEI_POLICY.md'
       - '.github/workflows/scanner-validate.yml'
   push:
     branches:
       - feat/scanner-practical-upgrade
       - feat/uncover-asset-aggregation
+      - fix/nuclei-display-policy-exposure
     paths:
       - 'docker-compose.scanner.yml'
       - 'scanner/**'
@@ -21,6 +23,7 @@ on:
       - 'scripts/scan-enhanced.sh'
       - 'SCANNER.md'
       - 'UNCOVER.md'
+      - 'NUCLEI_POLICY.md'
       - '.github/workflows/scanner-validate.yml'
 
 permissions:
@@ -52,6 +55,8 @@ jobs:
           python -m py_compile \
             scanner/prepare_targets.py \
             scanner/uncover_assets.py \
+            scanner/extract_api_surface.py \
+            scanner/nuclei_report.py \
             scanner/summarize.py
 
       - name: Test target normalization
@@ -100,6 +105,40 @@ jobs:
           grep -q 'other.example.net' "$tmp/out/uncover.candidates.jsonl"
           python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["scoped_hosts"] == 1 and d["candidate_results"] == 2' "$tmp/out/uncover-stats.json"
 
+      - name: Test API HTTP and callback surface extraction
+        run: |
+          tmp="$(mktemp -d)"
+          cat >"$tmp/urls.txt" <<'EOF'
+          https://example.com/
+          https://example.com/api/v1/users
+          https://example.com/swagger.json
+          https://example.com/webhooks/payment
+          https://example.com/assets/app.js
+          wss://example.com/socket
+          EOF
+          python scanner/extract_api_surface.py "$tmp/out" "$tmp/urls.txt"
+          grep -qx 'https://example.com/api/v1/users' "$tmp/out/api-endpoints.txt"
+          grep -qx 'https://example.com/swagger.json' "$tmp/out/api-docs-endpoints.txt"
+          grep -qx 'https://example.com/webhooks/payment' "$tmp/out/webhook-endpoints.txt"
+          grep -qx 'wss://example.com/socket' "$tmp/out/websocket-endpoints.txt"
+          grep -qx 'https://example.com/assets/app.js' "$tmp/out/js-files.txt"
+
+      - name: Test Nuclei result normalization and display
+        run: |
+          tmp="$(mktemp -d)"
+          cat >"$tmp/official.jsonl" <<'EOF'
+          {"template-id":"env-file","info":{"name":"Env File Exposure","severity":"high"},"matched-at":"https://example.com/.env","matcher-name":"body"}
+          {"template-id":"env-file","info":{"name":"Env File Exposure","severity":"high"},"matched-at":"https://example.com/.env","matcher-name":"body"}
+          EOF
+          cat >"$tmp/api.jsonl" <<'EOF'
+          {"template-id":"swagger-api","info":{"name":"Swagger API","severity":"info"},"matched-at":"https://example.com/swagger.json"}
+          EOF
+          NUCLEI_REPORT_LIMIT=10 python scanner/nuclei_report.py "$tmp/out" "$tmp/official.jsonl" "$tmp/api.jsonl" --show
+          grep -q 'Env File Exposure' "$tmp/out/nuclei-findings.md"
+          grep -q 'swagger-api' "$tmp/out/nuclei-findings.md"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["findings"] == 2 and d["duplicates_removed"] == 1 and d["severities"]["high"] == 1' "$tmp/out/nuclei-status.json"
+          test "$(grep -cve '^[[:space:]]*$' "$tmp/out/nuclei.jsonl")" -eq 2
+
       - name: Test result summarizer
         run: |
           tmp="$(mktemp -d)"
@@ -110,11 +149,21 @@ jobs:
           cat >"$tmp/uncover-stats.json" <<'EOF'
           {"status":"completed","scoped_hosts":1,"sources":{"fofa":1}}
           EOF
+          cat >"$tmp/api-surface-stats.json" <<'EOF'
+          {"api_endpoints":1,"api_docs":1,"webhooks":1,"websockets":1,"javascript_files":1}
+          EOF
+          cat >"$tmp/nuclei-status.json" <<'EOF'
+          {"findings":1,"sources":{"nuclei.exposure.jsonl":1}}
+          EOF
           printf 'api.example.com\n' >"$tmp/uncover-hosts.txt"
           printf 'api.example.com:443\n' >"$tmp/uncover-services.txt"
+          printf 'https://example.com/api/v1/users\n' >"$tmp/api-endpoints.txt"
+          printf 'https://example.com/swagger.json\n' >"$tmp/api-docs-endpoints.txt"
+          printf 'https://example.com/webhook\n' >"$tmp/webhook-endpoints.txt"
+          printf 'wss://example.com/socket\n' >"$tmp/websocket-endpoints.txt"
+          printf 'https://example.com/app.js\n' >"$tmp/js-files.txt"
           cat >"$tmp/nuclei.jsonl" <<'EOF'
-          {"info":{"severity":"high"}}
-          {"info":{"severity":"critical"}}
+          {"_source_file":"nuclei.exposure.jsonl","_normalized":{"severity":"high","template_id":"env-file","name":"Env File Exposure","matched_at":"https://example.com/.env"}}
           EOF
           cat >"$tmp/sourcemaps.jsonl" <<'EOF'
           {"url":"https://example.com/app.js.map"}
@@ -122,11 +171,14 @@ jobs:
           cat >"$tmp/ffuf/a.json" <<'EOF'
           {"results":[{"status":200},{"status":403}]}
           EOF
+          printf 'template_count=9000\n' >"$tmp/nuclei-template-status.txt"
           python scanner/summarize.py "$tmp"
           grep -q '外部搜索引擎发现域名：1' "$tmp/summary.md"
-          grep -q 'Sourcemap 泄露：1' "$tmp/summary.md"
-          grep -q 'critical: 1' "$tmp/summary.md"
-          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["ffuf_findings"] == 2 and d["sourcemaps"] == 1 and d["external_hosts_discovered"] == 1' "$tmp/summary.json"
+          grep -q 'API/HTTP 调用端点：1' "$tmp/summary.md"
+          grep -q 'Env File Exposure' "$tmp/summary.md"
+          grep -q '模板数量：9000' "$tmp/summary.md"
+          grep -q 'critical' "$tmp/summary.md" && exit 1 || true
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["ffuf_findings"] == 2 and d["sourcemaps"] == 1 and d["api_endpoints"] == 1 and d["nuclei_findings"]["high"] == 1' "$tmp/summary.json"
 
       - name: Validate Compose rendering
         run: |
@@ -136,6 +188,8 @@ jobs:
           docker compose -f docker-compose.scanner.yml --profile scanner config >/tmp/scanner-compose.yml
           grep -q 'arl-plus-scanner:2026.07' /tmp/scanner-compose.yml
           grep -q '/run/secrets' /tmp/scanner-compose.yml
+          grep -q 'NUCLEI_POLICY' /tmp/scanner-compose.yml
+          grep -q 'NUCLEI_SHOW_FINDINGS' /tmp/scanner-compose.yml
           ! grep -q '^    ports:' /tmp/scanner-compose.yml
 
       - name: Enforce scanner isolation and safety
@@ -143,6 +197,9 @@ jobs:
           ! grep -R --line-number -E 'docker compose (down|restart)|mongodb|rabbitmq|mcp-local|arl_web|arl_worker' \
             scanner scripts/scan-enhanced.sh docker-compose.scanner.yml
           grep -q -- '-exclude-tags dos' scanner/run-scan.sh
+          grep -q 'dos,fuzz,intrusive,bruteforce' scanner/run-scan-uncover.sh
+          ! grep -q -- '-code' scanner/run-scan-uncover.sh
+          ! grep -q -- '-enable-self-contained' scanner/run-scan-uncover.sh
           grep -q 'UNCOVER_ACCEPT_IP_ONLY.*false' docker-compose.scanner.yml
           grep -q 'cap_drop:' docker-compose.scanner.yml
           grep -q 'no-new-privileges:true' docker-compose.scanner.yml
@@ -166,7 +223,7 @@ jobs:
         run: |
           docker compose -f docker-compose.scanner.yml --profile scanner build --progress plain scanner
 
-      - name: Smoke-test scanner binaries
+      - name: Smoke-test scanner binaries and helpers
         env:
           UPDATE_TEMPLATES: 'false'
         run: |
@@ -175,9 +232,13 @@ jobs:
             for tool in subfinder uncover dnsx naabu httpx katana nuclei afrog ffuf nmap; do
               command -v "$tool"
             done
+            nuclei -h 2>&1 | grep -q -- "-automatic-scan"
+            nuclei -h 2>&1 | grep -q -- "-tags"
             python3 -m py_compile \
               /opt/scanner/prepare_targets.py \
               /opt/scanner/uncover_assets.py \
+              /opt/scanner/extract_api_surface.py \
+              /opt/scanner/nuclei_report.py \
               /opt/scanner/summarize.py
             bash -n /opt/scanner/run-scan.sh
             bash -n /opt/scanner/run-scan-uncover.sh
