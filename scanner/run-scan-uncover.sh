@@ -11,10 +11,11 @@ export SCAN_ID
 OUT="/work/results/${SCAN_ID}"
 PROVIDER_CONFIG="${UNCOVER_PROVIDER_CONFIG:-/run/secrets/uncover-provider.yaml}"
 AUGMENTED_TARGETS="/tmp/arl-uncover-targets-${SCAN_ID}.txt"
+NUCLEI_EXTRA_TARGETS="/tmp/arl-nuclei-extra-${SCAN_ID}.txt"
 UNCOVER_FAILED=false
 
 log() {
-  printf '[scanner-uncover][%s] %s\n' "$(date '+%F %T')" "$*"
+  printf '[scanner-plus][%s] %s\n' "$(date '+%F %T')" "$*"
 }
 
 enabled() {
@@ -22,7 +23,7 @@ enabled() {
 }
 
 cleanup() {
-  rm -f "$AUGMENTED_TARGETS"
+  rm -f "$AUGMENTED_TARGETS" "$NUCLEI_EXTRA_TARGETS"
 }
 trap cleanup EXIT
 
@@ -80,12 +81,8 @@ run_uncover() {
   fi
 
   local expanded="false"
-  if [[ "$MODE" == "deep" ]]; then
-    expanded="true"
-  fi
-  if [[ -n "${UNCOVER_EXPANDED_QUERIES_OVERRIDE:-}" ]]; then
-    expanded="${UNCOVER_EXPANDED_QUERIES_OVERRIDE}"
-  fi
+  [[ "$MODE" == "deep" ]] && expanded="true"
+  [[ -n "${UNCOVER_EXPANDED_QUERIES_OVERRIDE:-}" ]] && expanded="${UNCOVER_EXPANDED_QUERIES_OVERRIDE}"
 
   local prepare_args=(prepare "$OUT/domains.txt" "$OUT/uncover-queries.txt")
   enabled "$expanded" && prepare_args+=(--expanded)
@@ -126,7 +123,146 @@ run_uncover() {
   log "Uncover 完成：域名 ${hosts}，服务 ${services}，URL ${urls}，IP 候选 ${candidates}"
 }
 
+ensure_nuclei_templates() {
+  local template_dir="${NUCLEI_TEMPLATE_DIR:-/root/nuclei-templates}"
+  local minimum="${NUCLEI_TEMPLATE_MIN_COUNT:-50}"
+  local count=0
+  if [[ -d "$template_dir" ]]; then
+    count="$(find "$template_dir" -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  if (( count < minimum )); then
+    log "Nuclei 模板数量 ${count}，低于 ${minimum}，尝试更新模板"
+    nuclei -ut >"$OUT/nuclei-template-update.log" 2>&1 || true
+    count="$(find "$template_dir" -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  {
+    echo "template_dir=${template_dir}"
+    echo "template_count=${count}"
+    echo "minimum_expected=${minimum}"
+  } >"$OUT/nuclei-template-status.txt"
+  if (( count == 0 )); then
+    log "WARN: Nuclei 官方模板仍为空；扫描会继续，但官方模板不会产生结果"
+  fi
+}
+
+resolve_nuclei_policy() {
+  local policy="${NUCLEI_POLICY:-auto}"
+  if [[ "$policy" == "auto" ]]; then
+    case "$MODE" in
+      fast) policy="safe" ;;
+      standard) policy="balanced" ;;
+      deep) policy="deep" ;;
+    esac
+  fi
+  case "$policy" in
+    off|safe|balanced|exposure|deep) ;;
+    *)
+      log "WARN: 未知 NUCLEI_POLICY=${policy}，回退 balanced"
+      policy="balanced"
+      ;;
+  esac
+  printf '%s' "$policy"
+}
+
+run_nuclei_extra_pass() {
+  local name="$1"
+  local output="$2"
+  local logfile="$3"
+  local targets="$4"
+  shift 4
+
+  : >"$output"
+  : >"$logfile"
+  [[ -s "$targets" ]] || return 0
+
+  log "开始：${name}"
+  if nuclei \
+    -l "$targets" \
+    -silent -jsonl \
+    -severity "${NUCLEI_EXTRA_SEVERITY:-info,low,medium,high,critical}" \
+    -exclude-tags "${NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}" \
+    -rate-limit "${NUCLEI_RATE_LIMIT:-120}" \
+    -concurrency "${NUCLEI_EXTRA_CONCURRENCY:-20}" \
+    -bulk-size 20 \
+    -timeout 10 -retries 1 -duc \
+    -o "$output" \
+    "$@" 2> >(tee "$logfile" >&2); then
+    log "完成：${name}"
+  else
+    local rc=$?
+    log "WARN: ${name} 失败，退出码 ${rc}；保留日志并继续"
+    printf '%s\trc=%s\n' "$name" "$rc" >>"$OUT/errors.log"
+  fi
+}
+
+run_nuclei_enhancements() {
+  if ! enabled "${ENABLE_NUCLEI:-true}"; then
+    return 0
+  fi
+
+  python3 /opt/scanner/extract_api_surface.py \
+    "$OUT" "$OUT/live-urls.txt" "$OUT/katana.txt" "$OUT/sourcemap-candidates.txt"
+
+  cat \
+    "$OUT/live-urls.txt" \
+    "$OUT/api-endpoints.txt" \
+    "$OUT/api-docs-endpoints.txt" \
+    "$OUT/webhook-endpoints.txt" 2>/dev/null | \
+    sed '/^[[:space:]]*$/d' | sort -u >"$NUCLEI_EXTRA_TARGETS"
+
+  local policy
+  policy="$(resolve_nuclei_policy)"
+  echo "nuclei_policy=${policy}" >>"$OUT/manifest.txt"
+  echo "nuclei_exclude_tags=${NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}" >>"$OUT/manifest.txt"
+
+  : >"$OUT/nuclei.automatic.jsonl"
+  : >"$OUT/nuclei.exposure.jsonl"
+  : >"$OUT/nuclei.api.jsonl"
+
+  if [[ "$policy" != "off" ]]; then
+    if [[ "$policy" == "balanced" || "$policy" == "deep" ]] && enabled "${ENABLE_NUCLEI_AUTOMATIC:-true}"; then
+      run_nuclei_extra_pass \
+        "Nuclei 技术栈自动策略扫描" \
+        "$OUT/nuclei.automatic.jsonl" \
+        "$OUT/nuclei.automatic.log" \
+        "$OUT/live-urls.txt" \
+        -automatic-scan
+    fi
+
+    if enabled "${ENABLE_NUCLEI_EXPOSURE:-true}"; then
+      run_nuclei_extra_pass \
+        "Nuclei 文件泄露与错误配置专项" \
+        "$OUT/nuclei.exposure.jsonl" \
+        "$OUT/nuclei.exposure.log" \
+        "$OUT/live-urls.txt" \
+        -tags "${NUCLEI_EXPOSURE_TAGS:-exposure,config,files,backup,token,logs,debug,misconfig}"
+    fi
+
+    if enabled "${ENABLE_NUCLEI_API:-true}" && [[ -s "$NUCLEI_EXTRA_TARGETS" ]]; then
+      run_nuclei_extra_pass \
+        "Nuclei API/HTTP/Webhook 调用面专项" \
+        "$OUT/nuclei.api.jsonl" \
+        "$OUT/nuclei.api.log" \
+        "$NUCLEI_EXTRA_TARGETS" \
+        -tags "${NUCLEI_API_TAGS:-api,swagger,openapi,graphql,webhook}"
+    fi
+  fi
+
+  local report_args=(
+    "$OUT"
+    "$OUT/nuclei.official.jsonl"
+    "$OUT/nuclei.custom.jsonl"
+    "$OUT/nuclei.automatic.jsonl"
+    "$OUT/nuclei.exposure.jsonl"
+    "$OUT/nuclei.api.jsonl"
+  )
+  enabled "${NUCLEI_SHOW_FINDINGS:-true}" && report_args+=(--show)
+  python3 /opt/scanner/nuclei_report.py "${report_args[@]}"
+  python3 /opt/scanner/summarize.py "$OUT"
+}
+
 run_uncover
+ensure_nuclei_templates
 
 cat \
   "$TARGET_FILE" \
@@ -136,6 +272,7 @@ cat \
   sed '/^[[:space:]]*$/d' | sort -u >"$AUGMENTED_TARGETS"
 
 /opt/scanner/run-scan.sh "$AUGMENTED_TARGETS" "$MODE"
+run_nuclei_enhancements
 
 {
   printf 'uncover='
@@ -146,3 +283,5 @@ if [[ "$UNCOVER_FAILED" == "true" ]]; then
   printf 'Uncover 多引擎资产聚合\trc=partial-or-failed\n' >>"$OUT/errors.log"
   python3 /opt/scanner/summarize.py "$OUT"
 fi
+
+log "Nuclei 详细结果：${OUT}/nuclei-findings.md"
