@@ -100,7 +100,10 @@ def main() -> int:
     raw_targets: list[str] = []
     hosts: list[str] = []
     domains: list[str] = []
+    ips: list[str] = []
+    cidrs: list[str] = []
     urls: list[str] = []
+    http_probes: list[str] = []
     rejected: list[str] = []
 
     for raw in args.input.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -114,31 +117,46 @@ def main() -> int:
         if kind == "url":
             url, host = normalized.split("\t", 1)
             urls.append(url)
+            http_probes.append(url)
             hosts.append(host)
             raw_targets.append(url)
             try:
                 ipaddress.ip_address(host)
+                ips.append(host)
             except ValueError:
                 domains.append(host)
         elif kind == "domain":
             hosts.append(normalized)
-            domains.append(normalized.split(":", 1)[0])
+            domains.append(normalized.rsplit(":", 1)[0] if normalized.rsplit(":", 1)[-1].isdigit() else normalized)
+            http_probes.append(normalized)
+            raw_targets.append(normalized)
+        elif kind == "ip":
+            hosts.append(normalized)
+            ips.append(normalized)
+            http_probes.append(normalized)
             raw_targets.append(normalized)
         else:
             hosts.append(normalized)
+            cidrs.append(normalized)
             raw_targets.append(normalized)
 
     write_lines(args.output_dir / "targets.normalized.txt", raw_targets)
     write_lines(args.output_dir / "hosts.txt", hosts)
     write_lines(args.output_dir / "domains.txt", domains)
+    write_lines(args.output_dir / "ips.txt", ips)
+    write_lines(args.output_dir / "cidrs.txt", cidrs)
     write_lines(args.output_dir / "urls.seed.txt", urls)
+    write_lines(args.output_dir / "http-probe.txt", http_probes)
     write_lines(args.output_dir / "rejected.txt", rejected)
 
     counts = {
         "normalized": len(unique(raw_targets)),
         "hosts": len(unique(hosts)),
         "domains": len(unique(domains)),
+        "ips": len(unique(ips)),
+        "cidrs": len(unique(cidrs)),
         "seed_urls": len(unique(urls)),
+        "http_probes": len(unique(http_probes)),
         "rejected": len(unique(rejected)),
     }
     (args.output_dir / "target-counts.json").write_text(
