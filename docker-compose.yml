@@ -1,8 +1,9 @@
 version: '3'
 
 volumes:
-  arl_db:
-    external: true
+    arl_db:
+        external: true
+    arl_mcp_data:
 
 services:
     web:
@@ -59,6 +60,44 @@ services:
       environment:
         - LANG=en_US.UTF-8
         - TZ=Asia/Shanghai
+
+    mcp:
+      build:
+        context: ./mcp
+      container_name: arl_mcp
+      restart: unless-stopped
+      depends_on:
+        - web
+      ports:
+        - "${MCP_BIND_IP:-127.0.0.1}:${MCP_PORT:-5013}:5013"
+      volumes:
+        - ./config-docker.yaml:/config/config-docker.yaml:ro
+        - arl_mcp_data:/data
+      environment:
+        - TZ=Asia/Shanghai
+        - MCP_HOST=0.0.0.0
+        - MCP_PORT=5013
+        - MCP_TOKEN=${MCP_TOKEN:-}
+        - MCP_TOKEN_FILE=/data/token
+        - MCP_READ_ONLY=${MCP_READ_ONLY:-true}
+        - MCP_ALLOW_UNAUTHENTICATED=${MCP_ALLOW_UNAUTHENTICATED:-false}
+        - MCP_MAX_PAGE_SIZE=${MCP_MAX_PAGE_SIZE:-200}
+        - MCP_LOG_LEVEL=${MCP_LOG_LEVEL:-INFO}
+        - ARL_BASE_URL=${ARL_BASE_URL:-https://web}
+        - ARL_API_PREFIX=/api
+        - ARL_CONFIG_PATH=/config/config-docker.yaml
+        - ARL_VERIFY_TLS=${ARL_VERIFY_TLS:-false}
+        - ARL_TIMEOUT=${ARL_TIMEOUT:-30}
+        - ARL_API_KEY=${ARL_API_KEY:-}
+        - ARL_TOKEN=${ARL_TOKEN:-}
+        - ARL_USERNAME=${ARL_USERNAME:-}
+        - ARL_PASSWORD=${ARL_PASSWORD:-}
+      healthcheck:
+        test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5013/healthz', timeout=3)"]
+        interval: 30s
+        timeout: 5s
+        retries: 3
+        start_period: 15s
 
     mongodb:
         image: mongo:4.0.27
