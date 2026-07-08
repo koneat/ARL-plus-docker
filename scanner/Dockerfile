@@ -40,10 +40,13 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/ /usr/local/bin/
-COPY entrypoint.sh run-scan.sh prepare_targets.py uncover_assets.py summarize.py /opt/scanner/
+COPY entrypoint.sh run-scan.sh run-scan-uncover.sh prepare_targets.py uncover_assets.py summarize.py /opt/scanner/
 COPY wordlists/high-value-paths.txt /opt/scanner/wordlists/high-value-paths.txt
 
-RUN chmod +x /opt/scanner/entrypoint.sh /opt/scanner/run-scan.sh && \
+RUN chmod +x \
+      /opt/scanner/entrypoint.sh \
+      /opt/scanner/run-scan.sh \
+      /opt/scanner/run-scan-uncover.sh && \
     mkdir -p /work/results /root/.config /root/nuclei-templates /opt/pocs/nuclei /opt/pocs/afrog /run/secrets
 
 WORKDIR /work
