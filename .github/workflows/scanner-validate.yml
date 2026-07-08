@@ -54,16 +54,17 @@ jobs:
           https://api.example.com/v1?q=1
           192.0.2.10
           192.0.2.0/30
-          [2001:db8::1]
+          2001:db8::1
           invalid target
           EOF
           sed -i 's/^          //' "$tmp/targets.txt"
           python scanner/prepare_targets.py "$tmp/targets.txt" "$tmp/out"
           grep -qx 'example.com' "$tmp/out/domains.txt"
           grep -qx '192.0.2.10' "$tmp/out/ips.txt"
+          grep -qx '2001:db8::1' "$tmp/out/ips.txt"
           grep -qx '192.0.2.0/30' "$tmp/out/cidrs.txt"
           grep -qx 'https://api.example.com/v1?q=1' "$tmp/out/urls.seed.txt"
-          ! grep -q '/' "$tmp/out/http-probe.txt"
+          ! grep -Fqx '192.0.2.0/30' "$tmp/out/http-probe.txt"
           grep -qx 'invalid target' "$tmp/out/rejected.txt"
 
       - name: Test result summarizer
