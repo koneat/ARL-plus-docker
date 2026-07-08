@@ -12,7 +12,6 @@ services:
         AFROG_VERSION: ${AFROG_VERSION:-v3.5.3}
         FFUF_VERSION: ${FFUF_VERSION:-v2.1.0}
     image: arl-plus-scanner:2026.07
-    container_name: arl_plus_scanner
     profiles:
       - scanner
     working_dir: /work
