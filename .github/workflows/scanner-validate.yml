@@ -54,6 +54,7 @@ jobs:
           https://api.example.com/v1?q=1
           192.0.2.10
           192.0.2.0/30
+          10.0.0.0/8
           2001:db8::1
           invalid target
           EOF
@@ -63,6 +64,8 @@ jobs:
           grep -qx '192.0.2.10' "$tmp/out/ips.txt"
           grep -qx '2001:db8::1' "$tmp/out/ips.txt"
           grep -qx '192.0.2.0/30' "$tmp/out/cidrs.txt"
+          ! grep -Fqx '10.0.0.0/8' "$tmp/out/cidrs.txt"
+          grep -Fq '10.0.0.0/8' "$tmp/out/rejected.txt"
           grep -qx 'https://api.example.com/v1?q=1' "$tmp/out/urls.seed.txt"
           ! grep -Fqx '192.0.2.0/30' "$tmp/out/http-probe.txt"
           grep -qx 'invalid target' "$tmp/out/rejected.txt"
