@@ -106,3 +106,33 @@ jobs:
           grep -q -- '-exclude-tags dos' scanner/run-scan.sh
           grep -q 'cap_drop:' docker-compose.scanner.yml
           grep -q 'no-new-privileges:true' docker-compose.scanner.yml
+
+  image-build:
+    needs: static-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare bind-mount directories
+        run: |
+          mkdir -p scan-results scanner-cache/config scanner-cache/nuclei-templates scanner-pocs/nuclei scanner-pocs/afrog
+
+      - name: Build scanner image
+        run: |
+          docker compose -f docker-compose.scanner.yml --profile scanner build --progress plain scanner
+
+      - name: Smoke-test scanner binaries
+        env:
+          UPDATE_TEMPLATES: 'false'
+        run: |
+          docker compose -f docker-compose.scanner.yml --profile scanner run --rm scanner bash -lc '
+            set -e
+            for tool in subfinder dnsx naabu httpx katana nuclei afrog ffuf nmap; do
+              command -v "$tool"
+            done
+            python3 -m py_compile /opt/scanner/prepare_targets.py /opt/scanner/summarize.py
+            bash -n /opt/scanner/run-scan.sh
+          '
