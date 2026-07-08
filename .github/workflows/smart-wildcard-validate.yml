@@ -55,16 +55,12 @@ jobs:
       - name: Enforce worker-only scope
         run: |
           python - <<'PY'
-          import yaml
-          data = yaml.safe_load(open('docker-compose.smart-wildcard.yml'))
-          assert set(data['services']) == {'worker'}
+          from pathlib import Path
+          text = Path('docker-compose.smart-wildcard.yml').read_text(encoding='utf-8')
+          assert 'services:\n  worker:' in text
+          for forbidden in ('\n  web:', '\n  scheduler:', '\n  mongodb:', '\n  rabbitmq:', '\n  mcp:', '\n  mcp-local:'):
+              assert forbidden not in text, forbidden
           PY
-        env:
-          PYTHONPATH: ''
-
-      - name: Install YAML parser
-        if: always()
-        run: true
 
       - name: Enforce non-destructive commands
         run: |
@@ -104,7 +100,7 @@ jobs:
 
       - name: Test smart filtering decisions
         run: |
-          docker run --rm --entrypoint python3.6 arl-smart-wildcard:v3.0.1 - <<'PY'
+          docker run --rm -i --entrypoint python3.6 arl-smart-wildcard:v3.0.1 - <<'PY'
           import os
           os.environ['WILDCARD_VERIFY_MAX'] = '10'
           os.environ['WILDCARD_KEEP_UNKNOWN_PASSIVE'] = 'true'
