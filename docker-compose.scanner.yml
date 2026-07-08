@@ -11,6 +11,7 @@ services:
         DNSX_VERSION: ${DNSX_VERSION:-v1.2.3}
         AFROG_VERSION: ${AFROG_VERSION:-v3.5.3}
         FFUF_VERSION: ${FFUF_VERSION:-v2.1.0}
+        UNCOVER_VERSION: ${UNCOVER_VERSION:-3f7b74af20b24a7d5477d1dc77f6ba881219b0de}
     image: arl-plus-scanner:2026.07
     profiles:
       - scanner
@@ -21,12 +22,19 @@ services:
       SCAN_MODE: ${SCAN_MODE:-standard}
       UPDATE_TEMPLATES: ${UPDATE_TEMPLATES:-true}
       ENABLE_SUBFINDER: ${ENABLE_SUBFINDER:-true}
+      ENABLE_UNCOVER: ${ENABLE_UNCOVER:-true}
       ENABLE_NAABU: ${ENABLE_NAABU:-true}
       ENABLE_KATANA: ${ENABLE_KATANA:-true}
       ENABLE_SOURCEMAP: ${ENABLE_SOURCEMAP:-true}
       ENABLE_NUCLEI: ${ENABLE_NUCLEI:-true}
       ENABLE_AFROG: ${ENABLE_AFROG:-true}
       ENABLE_FFUF: ${ENABLE_FFUF:-true}
+      UNCOVER_PROVIDER_CONFIG: ${UNCOVER_PROVIDER_CONFIG:-/run/secrets/uncover-provider.yaml}
+      UNCOVER_ENGINES: ${UNCOVER_ENGINES:-auto}
+      UNCOVER_LIMIT: ${UNCOVER_LIMIT:-100}
+      UNCOVER_RATE_LIMIT: ${UNCOVER_RATE_LIMIT:-2}
+      UNCOVER_ACCEPT_IP_ONLY: ${UNCOVER_ACCEPT_IP_ONLY:-false}
+      UNCOVER_EXPANDED_QUERIES_OVERRIDE: ${UNCOVER_EXPANDED_QUERIES_OVERRIDE:-}
       NUCLEI_RATE_LIMIT: ${NUCLEI_RATE_LIMIT:-120}
       HTTPX_RATE_LIMIT: ${HTTPX_RATE_LIMIT:-150}
       NAABU_RATE: ${NAABU_RATE:-500}
@@ -47,6 +55,7 @@ services:
       - ./scanner-cache/nuclei-templates:/root/nuclei-templates
       - ./scanner-pocs/nuclei:/opt/pocs/nuclei:ro
       - ./scanner-pocs/afrog:/opt/pocs/afrog:ro
+      - ./scanner-secrets:/run/secrets:ro
     cap_drop:
       - ALL
     security_opt:
