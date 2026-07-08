@@ -1,4 +1,4 @@
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 ARG NUCLEI_VERSION=v3.11.0
 ARG HTTPX_VERSION=v1.9.0
@@ -12,7 +12,10 @@ ARG FFUF_VERSION=v2.1.0
 ENV CGO_ENABLED=1 \
     GOBIN=/out
 
-RUN mkdir -p /out && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libpcap-dev && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /out && \
     go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION} && \
     go install github.com/projectdiscovery/httpx/cmd/httpx@${HTTPX_VERSION} && \
     go install github.com/projectdiscovery/naabu/v2/cmd/naabu@${NAABU_VERSION} && \
@@ -31,7 +34,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      bash ca-certificates curl jq python3 nmap tini && \
+      bash ca-certificates curl jq libpcap0.8 python3 nmap tini && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/ /usr/local/bin/
