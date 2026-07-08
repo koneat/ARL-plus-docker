@@ -1,0 +1,27 @@
+services:
+  next-gateway:
+    image: nginx:1.27-alpine
+    container_name: arl_next_gateway
+    restart: unless-stopped
+    profiles:
+      - next
+    depends_on:
+      - web
+      - mcp
+    ports:
+      - "${NEXT_GATEWAY_BIND_IP:-127.0.0.1}:${NEXT_GATEWAY_PORT:-5173}:8080"
+    volumes:
+      - ./next/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:8080/healthz | grep -q '"status":"ok"'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
