@@ -52,7 +52,7 @@ swagger/index.html
 docs
 redoc
 graphql
-gr graphiql
+graphiql
 actuator
 actuator/env
 actuator/configprops
