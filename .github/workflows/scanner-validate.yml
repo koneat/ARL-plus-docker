@@ -5,17 +5,22 @@ on:
     paths:
       - 'docker-compose.scanner.yml'
       - 'scanner/**'
+      - 'scanner-secrets/uncover-provider.example.yaml'
       - 'scripts/scan-enhanced.sh'
       - 'SCANNER.md'
+      - 'UNCOVER.md'
       - '.github/workflows/scanner-validate.yml'
   push:
     branches:
       - feat/scanner-practical-upgrade
+      - feat/uncover-asset-aggregation
     paths:
       - 'docker-compose.scanner.yml'
       - 'scanner/**'
+      - 'scanner-secrets/uncover-provider.example.yaml'
       - 'scripts/scan-enhanced.sh'
       - 'SCANNER.md'
+      - 'UNCOVER.md'
       - '.github/workflows/scanner-validate.yml'
 
 permissions:
@@ -39,11 +44,15 @@ jobs:
         run: |
           bash -n scanner/entrypoint.sh
           bash -n scanner/run-scan.sh
+          bash -n scanner/run-scan-uncover.sh
           bash -n scripts/scan-enhanced.sh
 
       - name: Validate Python syntax
         run: |
-          python -m py_compile scanner/prepare_targets.py scanner/summarize.py
+          python -m py_compile \
+            scanner/prepare_targets.py \
+            scanner/uncover_assets.py \
+            scanner/summarize.py
 
       - name: Test target normalization
         run: |
@@ -70,6 +79,27 @@ jobs:
           ! grep -Fqx '192.0.2.0/30' "$tmp/out/http-probe.txt"
           grep -qx 'invalid target' "$tmp/out/rejected.txt"
 
+      - name: Test Uncover scope normalization
+        run: |
+          tmp="$(mktemp -d)"
+          printf 'example.com\n' >"$tmp/domains.txt"
+          cat >"$tmp/uncover.jsonl" <<'EOF'
+          {"timestamp":1,"source":"fofa","host":"api.example.com","ip":"192.0.2.10","port":443,"url":"https://api.example.com/"}
+          {"timestamp":2,"source":"shodan","host":"other.example.net","ip":"198.51.100.10","port":443,"url":"https://other.example.net/"}
+          {"timestamp":3,"source":"quake","host":"","ip":"203.0.113.20","port":8443,"url":""}
+          EOF
+          python scanner/uncover_assets.py prepare "$tmp/domains.txt" "$tmp/queries.txt" --expanded
+          grep -Fqx 'example.com' "$tmp/queries.txt"
+          grep -Fqx 'ssl:"example.com"' "$tmp/queries.txt"
+          python scanner/uncover_assets.py merge "$tmp/uncover.jsonl" "$tmp/domains.txt" "$tmp/out"
+          grep -qx 'api.example.com' "$tmp/out/uncover-hosts.txt"
+          grep -qx 'api.example.com:443' "$tmp/out/uncover-services.txt"
+          grep -qx 'https://api.example.com/' "$tmp/out/uncover-urls.txt"
+          grep -qx '203.0.113.20' "$tmp/out/uncover-ip-candidates.txt"
+          ! grep -q '203.0.113.20:8443' "$tmp/out/uncover-services.txt"
+          grep -q 'other.example.net' "$tmp/out/uncover.candidates.jsonl"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["scoped_hosts"] == 1 and d["candidate_results"] == 2' "$tmp/out/uncover-stats.json"
+
       - name: Test result summarizer
         run: |
           tmp="$(mktemp -d)"
@@ -77,6 +107,11 @@ jobs:
           cat >"$tmp/target-counts.json" <<'EOF'
           {"normalized": 2, "domains": 1, "ips": 1}
           EOF
+          cat >"$tmp/uncover-stats.json" <<'EOF'
+          {"status":"completed","scoped_hosts":1,"sources":{"fofa":1}}
+          EOF
+          printf 'api.example.com\n' >"$tmp/uncover-hosts.txt"
+          printf 'api.example.com:443\n' >"$tmp/uncover-services.txt"
           cat >"$tmp/nuclei.jsonl" <<'EOF'
           {"info":{"severity":"high"}}
           {"info":{"severity":"critical"}}
@@ -88,15 +123,19 @@ jobs:
           {"results":[{"status":200},{"status":403}]}
           EOF
           python scanner/summarize.py "$tmp"
+          grep -q '外部搜索引擎发现域名：1' "$tmp/summary.md"
           grep -q 'Sourcemap 泄露：1' "$tmp/summary.md"
           grep -q 'critical: 1' "$tmp/summary.md"
-          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["ffuf_findings"] == 2 and d["sourcemaps"] == 1' "$tmp/summary.json"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["ffuf_findings"] == 2 and d["sourcemaps"] == 1 and d["external_hosts_discovered"] == 1' "$tmp/summary.json"
 
       - name: Validate Compose rendering
         run: |
-          mkdir -p scan-results scanner-cache/config scanner-cache/nuclei-templates scanner-pocs/nuclei scanner-pocs/afrog
+          mkdir -p \
+            scan-results scanner-cache/config scanner-cache/nuclei-templates \
+            scanner-pocs/nuclei scanner-pocs/afrog scanner-secrets
           docker compose -f docker-compose.scanner.yml --profile scanner config >/tmp/scanner-compose.yml
           grep -q 'arl-plus-scanner:2026.07' /tmp/scanner-compose.yml
+          grep -q '/run/secrets' /tmp/scanner-compose.yml
           ! grep -q '^    ports:' /tmp/scanner-compose.yml
 
       - name: Enforce scanner isolation and safety
@@ -104,6 +143,7 @@ jobs:
           ! grep -R --line-number -E 'docker compose (down|restart)|mongodb|rabbitmq|mcp-local|arl_web|arl_worker' \
             scanner scripts/scan-enhanced.sh docker-compose.scanner.yml
           grep -q -- '-exclude-tags dos' scanner/run-scan.sh
+          grep -q 'UNCOVER_ACCEPT_IP_ONLY.*false' docker-compose.scanner.yml
           grep -q 'cap_drop:' docker-compose.scanner.yml
           grep -q 'no-new-privileges:true' docker-compose.scanner.yml
 
@@ -118,7 +158,9 @@ jobs:
 
       - name: Prepare bind-mount directories
         run: |
-          mkdir -p scan-results scanner-cache/config scanner-cache/nuclei-templates scanner-pocs/nuclei scanner-pocs/afrog
+          mkdir -p \
+            scan-results scanner-cache/config scanner-cache/nuclei-templates \
+            scanner-pocs/nuclei scanner-pocs/afrog scanner-secrets
 
       - name: Build scanner image
         run: |
@@ -130,9 +172,13 @@ jobs:
         run: |
           docker compose -f docker-compose.scanner.yml --profile scanner run --rm scanner bash -lc '
             set -e
-            for tool in subfinder dnsx naabu httpx katana nuclei afrog ffuf nmap; do
+            for tool in subfinder uncover dnsx naabu httpx katana nuclei afrog ffuf nmap; do
               command -v "$tool"
             done
-            python3 -m py_compile /opt/scanner/prepare_targets.py /opt/scanner/summarize.py
+            python3 -m py_compile \
+              /opt/scanner/prepare_targets.py \
+              /opt/scanner/uncover_assets.py \
+              /opt/scanner/summarize.py
             bash -n /opt/scanner/run-scan.sh
+            bash -n /opt/scanner/run-scan-uncover.sh
           '
