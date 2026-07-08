@@ -7,12 +7,13 @@
 ## 扫描流程
 
 ```text
-目标规范化
+目标规范化与超大 CIDR 防误扫
   -> subfinder 被动子域名收集
   -> dnsx DNS 解析
-  -> naabu TCP connect 端口发现
+  -> naabu TCP connect 端口与服务版本发现
   -> httpx HTTP 存活、标题、技术栈、CDN 探测
   -> katana URL、JS、已知文件爬取
+  -> JavaScript Sourcemap 泄露探测
   -> nuclei 官方模板与自定义模板扫描
   -> afrog PoC 复核
   -> ffuf 高价值配置和备份文件探测
@@ -52,6 +53,7 @@ scan-results/latest/summary.md
 ### fast
 
 - 常用 100 端口
+- 不做服务版本探测
 - Katana 深度 2
 - Nuclei/afrog 仅 High、Critical
 - 默认不运行 ffuf
@@ -59,15 +61,19 @@ scan-results/latest/summary.md
 ### standard
 
 - 常用 1000 端口
+- Naabu 轻量服务版本识别
 - Katana 深度 3，并分析 JS 和已知文件
+- Sourcemap 泄露探测
 - Nuclei/afrog 扫描 Medium、High、Critical
 - 运行高价值路径 ffuf
 
 ### deep
 
 - 常用 1000 端口
+- Naabu 轻量服务版本识别
 - Subfinder 启用全部和递归数据源
 - Katana 深度 5
+- Sourcemap 泄露探测
 - Nuclei/afrog 包含 Low
 - 运行高价值路径 ffuf
 
@@ -75,6 +81,22 @@ scan-results/latest/summary.md
 
 ```bash
 CUSTOM_PORTS='80,443,8080,8443,9000-9100' \
+  bash scripts/scan-enhanced.sh targets.txt deep
+```
+
+## 超大 CIDR 防误扫
+
+默认最多接受：
+
+```dotenv
+MAX_IPV4_CIDR_ADDRESSES=4096
+MAX_IPV6_CIDR_ADDRESSES=256
+```
+
+超过限制的网段会写入 `rejected.txt`，不会进入端口扫描。明确确认范围后才能显式放开：
+
+```bash
+ALLOW_LARGE_CIDR=true \
   bash scripts/scan-enhanced.sh targets.txt deep
 ```
 
@@ -103,6 +125,7 @@ NUCLEI_RATE_LIMIT=60 FFUF_RATE=20 \
 ENABLE_SUBFINDER=false
 ENABLE_NAABU=false
 ENABLE_KATANA=false
+ENABLE_SOURCEMAP=false
 ENABLE_NUCLEI=false
 ENABLE_AFROG=false
 ENABLE_FFUF=false
@@ -136,12 +159,15 @@ Nuclei 3.11 起，使用 JavaScript 协议的自定义模板必须完成签名�
 
 ```text
 targets.normalized.txt    规范化目标
+rejected.txt              无效目标和被拦截的超大 CIDR
 subfinder.txt             被动发现的子域名
 dnsx.jsonl                DNS 解析结果
-naabu.jsonl               开放端口
+naabu.jsonl               开放端口与服务探测结果
+open-services.txt         可继续交给 HTTP 探测的 host:port
 httpx.jsonl               HTTP 站点和指纹
 live-urls.txt             存活 URL
 katana.txt                爬取 URL
+sourcemaps.jsonl          可访问的 JavaScript Sourcemap
 nuclei.jsonl              Nuclei 结果
 afrog.json                Afrog 结果
 ffuf/                     高价值路径结果
