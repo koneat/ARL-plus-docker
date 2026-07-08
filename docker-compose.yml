@@ -61,15 +61,17 @@ services:
         - LANG=en_US.UTF-8
         - TZ=Asia/Shanghai
 
-    mcp:
+    # 本机专用入口：只绑定 127.0.0.1，默认免 Token。
+    # 即使外部入口通过 Nginx/Cloudflare Tunnel 反代，也不会误判成本机请求。
+    mcp-local:
       build:
         context: ./mcp
-      container_name: arl_mcp
+      container_name: arl_mcp_local
       restart: unless-stopped
       depends_on:
         - web
       ports:
-        - "${MCP_BIND_IP:-127.0.0.1}:${MCP_PORT:-5013}:5013"
+        - "${MCP_LOCAL_BIND_IP:-127.0.0.1}:${MCP_LOCAL_PORT:-5013}:5013"
       volumes:
         - ./config-docker.yaml:/config/config-docker.yaml:ro
         - arl_mcp_data:/data
@@ -80,7 +82,48 @@ services:
         - MCP_TOKEN=${MCP_TOKEN:-}
         - MCP_TOKEN_FILE=/data/token
         - MCP_READ_ONLY=${MCP_READ_ONLY:-true}
-        - MCP_ALLOW_UNAUTHENTICATED=${MCP_ALLOW_UNAUTHENTICATED:-false}
+        - MCP_ALLOW_UNAUTHENTICATED=${MCP_ALLOW_LOCAL_UNAUTHENTICATED:-true}
+        - MCP_MAX_PAGE_SIZE=${MCP_MAX_PAGE_SIZE:-200}
+        - MCP_LOG_LEVEL=${MCP_LOG_LEVEL:-INFO}
+        - ARL_BASE_URL=${ARL_BASE_URL:-https://web}
+        - ARL_API_PREFIX=/api
+        - ARL_CONFIG_PATH=/config/config-docker.yaml
+        - ARL_VERIFY_TLS=${ARL_VERIFY_TLS:-false}
+        - ARL_TIMEOUT=${ARL_TIMEOUT:-30}
+        - ARL_API_KEY=${ARL_API_KEY:-}
+        - ARL_TOKEN=${ARL_TOKEN:-}
+        - ARL_USERNAME=${ARL_USERNAME:-}
+        - ARL_PASSWORD=${ARL_PASSWORD:-}
+      healthcheck:
+        test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5013/healthz', timeout=3)"]
+        interval: 30s
+        timeout: 5s
+        retries: 3
+        start_period: 15s
+
+    # 外部/反向代理入口：无条件强制 Token。
+    # 默认也只绑定 127.0.0.1，供本机 Nginx/Caddy/Cloudflare Tunnel 转发；
+    # 确需直接监听公网时，显式设置 MCP_EXTERNAL_BIND_IP=0.0.0.0。
+    mcp:
+      build:
+        context: ./mcp
+      container_name: arl_mcp
+      restart: unless-stopped
+      depends_on:
+        - web
+      ports:
+        - "${MCP_EXTERNAL_BIND_IP:-127.0.0.1}:${MCP_EXTERNAL_PORT:-5014}:5013"
+      volumes:
+        - ./config-docker.yaml:/config/config-docker.yaml:ro
+        - arl_mcp_data:/data
+      environment:
+        - TZ=Asia/Shanghai
+        - MCP_HOST=0.0.0.0
+        - MCP_PORT=5013
+        - MCP_TOKEN=${MCP_TOKEN:-}
+        - MCP_TOKEN_FILE=/data/token
+        - MCP_READ_ONLY=${MCP_READ_ONLY:-true}
+        - MCP_ALLOW_UNAUTHENTICATED=false
         - MCP_MAX_PAGE_SIZE=${MCP_MAX_PAGE_SIZE:-200}
         - MCP_LOG_LEVEL=${MCP_LOG_LEVEL:-INFO}
         - ARL_BASE_URL=${ARL_BASE_URL:-https://web}
