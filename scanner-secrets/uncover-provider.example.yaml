@@ -1,0 +1,26 @@
+# 复制为 scanner-secrets/uncover-provider.yaml 后填写。
+# 不要提交真实 API Key；scanner-secrets/ 已被 .gitignore 忽略。
+# 只配置你实际拥有并获准使用的搜索引擎。
+
+fofa:
+  - YOUR_FOFA_EMAIL:YOUR_FOFA_KEY
+
+hunter:
+  - YOUR_HUNTER_API_KEY
+
+quake:
+  - YOUR_QUAKE_TOKEN
+
+shodan:
+  - YOUR_SHODAN_API_KEY
+
+zoomeye:
+  - YOUR_ZOOMEYE_API_KEY
+
+# 可选：
+# censys:
+#   - YOUR_CENSYS_TOKEN:YOUR_CENSYS_ORG_ID
+# netlas:
+#   - YOUR_NETLAS_API_KEY
+# publicwww:
+#   - YOUR_PUBLICWWW_API_KEY

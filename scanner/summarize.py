@@ -95,6 +95,9 @@ def main() -> int:
 
     root = Path(sys.argv[1])
     target_counts = load_json(root / "target-counts.json", {})
+    uncover_stats = load_json(root / "uncover-stats.json", {})
+    if not isinstance(uncover_stats, dict):
+        uncover_stats = {}
     nuclei = nuclei_severities(root / "nuclei.jsonl")
     afrog = afrog_severities(root / "afrog.json")
     ffuf_total, ffuf_statuses = ffuf_summary(root / "ffuf")
@@ -110,6 +113,11 @@ def main() -> int:
 
     summary = {
         "targets": target_counts,
+        "uncover": uncover_stats,
+        "external_hosts_discovered": line_count(root / "uncover-hosts.txt"),
+        "external_services_discovered": line_count(root / "uncover-services.txt"),
+        "external_urls_discovered": line_count(root / "uncover-urls.txt"),
+        "external_ip_candidates": line_count(root / "uncover-ip-candidates.txt"),
         "subdomains_discovered": line_count(root / "subfinder.txt"),
         "resolved_domains": line_count(root / "dnsx.jsonl"),
         "open_services": line_count(root / "open-services.txt"),
@@ -128,10 +136,17 @@ def main() -> int:
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
 
+    uncover_status = str(uncover_stats.get("status") or "completed")
+    sources = uncover_stats.get("sources") or {}
+
     lines = [
         "# 扫描结果汇总",
         "",
         f"- 规范化目标：{target_counts.get('normalized', 0)}",
+        f"- 外部搜索引擎发现域名：{summary['external_hosts_discovered']}",
+        f"- 外部搜索引擎发现服务：{summary['external_services_discovered']}",
+        f"- 外部搜索引擎发现 URL：{summary['external_urls_discovered']}",
+        f"- 待人工确认 IP：{summary['external_ip_candidates']}",
         f"- 被动发现子域名：{summary['subdomains_discovered']}",
         f"- DNS 有效记录：{summary['resolved_domains']}",
         f"- 开放服务：{summary['open_services']}",
@@ -140,9 +155,16 @@ def main() -> int:
         f"- Sourcemap 泄露：{summary['sourcemaps']}",
         f"- 最终漏洞扫描 URL：{summary['total_scan_urls']}",
         "",
-        "## Nuclei",
+        "## 外部资产聚合",
         "",
+        f"- 状态：{uncover_status}",
     ]
+    if isinstance(sources, dict) and sources:
+        lines.extend(f"- {key}: {value}" for key, value in sorted(sources.items()))
+    else:
+        lines.append("- 未配置、未运行或没有返回结果")
+
+    lines.extend(["", "## Nuclei", ""])
     if summary["nuclei_findings"]:
         lines.extend(f"- {key}: {value}" for key, value in summary["nuclei_findings"].items())
     else:

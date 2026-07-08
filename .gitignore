@@ -2,5 +2,7 @@ scan-results/
 scanner-cache/
 scanner-pocs/nuclei/*
 scanner-pocs/afrog/*
+scanner-secrets/*
 !scanner-pocs/nuclei/.gitkeep
 !scanner-pocs/afrog/.gitkeep
+!scanner-secrets/uncover-provider.example.yaml
