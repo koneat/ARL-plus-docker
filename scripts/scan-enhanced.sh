@@ -48,8 +48,8 @@ docker compose version >/dev/null 2>&1 || {
   exit 1
 }
 
-TARGET_ABS="$(realpath "$TARGET_FILE")"
-[[ -f "$TARGET_ABS" ]] || {
+TARGET_ABS="$(realpath -e "$TARGET_FILE" 2>/dev/null || true)"
+[[ -n "$TARGET_ABS" && -f "$TARGET_ABS" ]] || {
   echo "目标文件不存在：$TARGET_FILE" >&2
   exit 1
 }
