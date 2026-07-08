@@ -50,6 +50,7 @@ case "$MODE" in
     AFROG_SEVERITY="high,critical"
     NUCLEI_CONCURRENCY="20"
     HTTPX_THREADS="30"
+    SCAN_URL_LIMIT="5000"
     ENABLE_FFUF_MODE="false"
     ;;
   standard)
@@ -62,6 +63,7 @@ case "$MODE" in
     AFROG_SEVERITY="medium,high,critical"
     NUCLEI_CONCURRENCY="30"
     HTTPX_THREADS="50"
+    SCAN_URL_LIMIT="20000"
     ENABLE_FFUF_MODE="true"
     ;;
   deep)
@@ -74,6 +76,7 @@ case "$MODE" in
     AFROG_SEVERITY="low,medium,high,critical"
     NUCLEI_CONCURRENCY="40"
     HTTPX_THREADS="70"
+    SCAN_URL_LIMIT="50000"
     ENABLE_FFUF_MODE="true"
     ;;
   *)
@@ -85,6 +88,7 @@ esac
 TOP_PORTS="${TOP_PORTS_OVERRIDE:-$TOP_PORTS}"
 NUCLEI_SEVERITY="${NUCLEI_SEVERITY_OVERRIDE:-$NUCLEI_SEVERITY}"
 AFROG_SEVERITY="${AFROG_SEVERITY_OVERRIDE:-$AFROG_SEVERITY}"
+SCAN_URL_LIMIT="${SCAN_URL_LIMIT_OVERRIDE:-$SCAN_URL_LIMIT}"
 
 {
   echo "scan_id=${SCAN_ID}"
@@ -92,6 +96,7 @@ AFROG_SEVERITY="${AFROG_SEVERITY_OVERRIDE:-$AFROG_SEVERITY}"
   echo "started_at=$(date -Iseconds)"
   echo "target_file=${TARGET_FILE}"
   echo "top_ports=${TOP_PORTS}"
+  echo "scan_url_limit=${SCAN_URL_LIMIT}"
   echo "nuclei_severity=${NUCLEI_SEVERITY}"
 } >"$OUT/manifest.txt"
 
@@ -133,6 +138,7 @@ naabu_stage() {
   local args=(
     -list "$OUT/portscan.targets.txt"
     -scan-type c
+    -Pn
     -rate "${NAABU_RATE:-500}"
     -retries 1
     -timeout 3000
@@ -160,7 +166,7 @@ else
   : >"$OUT/open-services.txt"
 fi
 
-cat "$OUT/urls.seed.txt" "$OUT/hosts.all.txt" "$OUT/open-services.txt" 2>/dev/null | \
+cat "$OUT/http-probe.txt" "$OUT/domains.all.txt" "$OUT/open-services.txt" 2>/dev/null | \
   sed '/^[[:space:]]*$/d' | sort -u >"$OUT/httpx.targets.txt"
 
 httpx_stage() {
@@ -209,8 +215,53 @@ else
   : >"$OUT/katana.txt"
 fi
 
+sourcemap_stage() {
+  : >"$OUT/sourcemap-candidates.txt"
+  : >"$OUT/sourcemaps.jsonl"
+  cat "$OUT/live-urls.txt" "$OUT/katana.txt" 2>/dev/null | python3 - "$OUT/sourcemap-candidates.txt" <<'PY'
+import sys
+from urllib.parse import urlsplit, urlunsplit
+
+output = sys.argv[1]
+seen = set()
+for raw in sys.stdin:
+    value = raw.strip()
+    if not value:
+        continue
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        continue
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        continue
+    if not parsed.path.lower().endswith(".js"):
+        continue
+    candidate = urlunsplit((parsed.scheme, parsed.netloc, parsed.path + ".map", "", ""))
+    seen.add(candidate)
+with open(output, "w", encoding="utf-8") as handle:
+    for item in sorted(seen):
+        handle.write(item + "\n")
+PY
+  [[ -s "$OUT/sourcemap-candidates.txt" ]] || return 0
+  httpx \
+    -l "$OUT/sourcemap-candidates.txt" \
+    -silent -json \
+    -match-code 200 \
+    -match-string '"sources"' \
+    -content-type -content-length \
+    -threads 20 -rate-limit 50 -timeout 10 -retries 1 \
+    -o "$OUT/sourcemaps.jsonl"
+}
+
+if enabled "${ENABLE_SOURCEMAP:-true}"; then
+  run_stage "JavaScript Sourcemap 泄露探测" sourcemap_stage
+else
+  : >"$OUT/sourcemaps.jsonl"
+fi
+
 cat "$OUT/live-urls.txt" "$OUT/katana.txt" 2>/dev/null | \
-  sed '/^[[:space:]]*$/d' | sort -u >"$OUT/scan-urls.txt"
+  sed '/^[[:space:]]*$/d' | sort -u >"$OUT/scan-urls.all.txt"
+head -n "$SCAN_URL_LIMIT" "$OUT/scan-urls.all.txt" >"$OUT/scan-urls.txt"
 
 nuclei_official_stage() {
   : >"$OUT/nuclei.official.jsonl"
@@ -219,6 +270,7 @@ nuclei_official_stage() {
     -l "$OUT/scan-urls.txt" \
     -silent -jsonl \
     -severity "$NUCLEI_SEVERITY" \
+    -exclude-tags dos \
     -rate-limit "${NUCLEI_RATE_LIMIT:-120}" \
     -concurrency "$NUCLEI_CONCURRENCY" \
     -bulk-size 25 \
@@ -236,6 +288,7 @@ nuclei_custom_stage() {
     -t /opt/pocs/nuclei \
     -silent -jsonl \
     -severity "$NUCLEI_SEVERITY" \
+    -exclude-tags dos \
     -rate-limit "${NUCLEI_RATE_LIMIT:-120}" \
     -concurrency "$NUCLEI_CONCURRENCY" \
     -bulk-size 25 \
