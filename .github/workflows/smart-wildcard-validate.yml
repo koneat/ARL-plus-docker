@@ -1,0 +1,147 @@
+name: smart-wildcard-validate
+
+on:
+  pull_request:
+    paths:
+      - 'docker-compose.smart-wildcard.yml'
+      - 'smart-worker/**'
+      - 'scripts/update-smart-wildcard.sh'
+      - 'scripts/rollback-smart-wildcard.sh'
+      - 'SMART_WILDCARD.md'
+      - '.github/workflows/smart-wildcard-validate.yml'
+  push:
+    branches:
+      - feat/smart-wildcard-filter
+    paths:
+      - 'docker-compose.smart-wildcard.yml'
+      - 'smart-worker/**'
+      - 'scripts/update-smart-wildcard.sh'
+      - 'scripts/rollback-smart-wildcard.sh'
+      - 'SMART_WILDCARD.md'
+      - '.github/workflows/smart-wildcard-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        run: |
+          bash -n scripts/update-smart-wildcard.sh
+          bash -n scripts/rollback-smart-wildcard.sh
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile \
+            smart-worker/patch_arl.py \
+            smart-worker/app/services/wildcardSmart.py
+
+      - name: Validate Compose rendering
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.smart-wildcard.yml \
+            config >/tmp/arl-smart-compose.yml
+          grep -q 'arl-smart-wildcard:v3.0.1' /tmp/arl-smart-compose.yml
+          grep -q 'WILDCARD_SMART_FILTER' /tmp/arl-smart-compose.yml
+
+      - name: Enforce worker-only scope
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('docker-compose.smart-wildcard.yml').read_text(encoding='utf-8')
+          assert 'services:\n  worker:' in text
+          for forbidden in ('\n  web:', '\n  scheduler:', '\n  mongodb:', '\n  rabbitmq:', '\n  mcp:', '\n  mcp-local:'):
+              assert forbidden not in text, forbidden
+          PY
+
+      - name: Enforce non-destructive commands
+        run: |
+          ! grep -R --line-number -E 'docker compose (down|restart)|down -v|docker volume rm' \
+            scripts/update-smart-wildcard.sh scripts/rollback-smart-wildcard.sh
+          grep -q -- '--no-deps' scripts/update-smart-wildcard.sh
+          grep -q -- '--no-deps' scripts/rollback-smart-wildcard.sh
+
+  image-build:
+    needs: static-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build patched worker image
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.smart-wildcard.yml \
+            build --pull worker
+
+      - name: Smoke-test patched files
+        run: |
+          docker run --rm --entrypoint sh arl-smart-wildcard:v3.0.1 -c '
+            set -e
+            python3.6 -m py_compile \
+              /code/app/services/massdns.py \
+              /code/app/services/wildcardSmart.py \
+              /code/app/tasks/domain.py
+            grep -q "WildcardSmartFilter" /code/app/tasks/domain.py
+            ! grep -q "if ip in self.not_found_domain_ips" /code/app/tasks/domain.py
+            ! grep -q "if record in self.wildcard_domain_ip" /code/app/services/massdns.py
+          '
+
+      - name: Test smart filtering decisions
+        run: |
+          docker run --rm -i --entrypoint python3.6 arl-smart-wildcard:v3.0.1 - <<'PY'
+          import os
+          os.environ['WILDCARD_VERIFY_MAX'] = '10'
+          os.environ['WILDCARD_KEEP_UNKNOWN_PASSIVE'] = 'true'
+          from app.services.wildcardSmart import WildcardSmartFilter
+
+          class Info(object):
+              def __init__(self, domain, ips, records):
+                  self.domain = domain
+                  self.ip_list = ips
+                  self.record_list = records
+
+          baseline = {
+              'status': 200,
+              'title': 'default site',
+              'server': 'nginx',
+              'content_type': 'text/html',
+              'location': '',
+              'body_hash': 'same',
+              'body_length': 1000,
+          }
+          different = dict(baseline)
+          different.update({
+              'title': 'admin portal',
+              'body_hash': 'different',
+              'body_length': 4200,
+          })
+
+          root = Info('example.com', ['203.0.113.10'], ['203.0.113.10'])
+          fake = Info('random.example.com', ['203.0.113.10'], ['203.0.113.10'])
+          real = Info('admin.example.com', ['203.0.113.10'], ['203.0.113.10'])
+          normal = Info('api.example.com', ['203.0.113.20'], ['203.0.113.20'])
+
+          smart = WildcardSmartFilter('example.com', ['203.0.113.10'])
+          smart._build_baselines = lambda: [baseline]
+          smart._fetch_domain = lambda domain: [different] if domain.startswith('admin.') else [baseline]
+
+          output = smart.filter_infos([root, fake, real, normal])
+          domains = set(item.domain for item in output)
+          assert 'example.com' in domains
+          assert 'admin.example.com' in domains
+          assert 'api.example.com' in domains
+          assert 'random.example.com' not in domains
+          print('smart-filter-test-ok')
+          PY
