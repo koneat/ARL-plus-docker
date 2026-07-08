@@ -8,6 +8,7 @@ ARG SUBFINDER_VERSION=v2.14.0
 ARG DNSX_VERSION=v1.2.3
 ARG AFROG_VERSION=v3.5.3
 ARG FFUF_VERSION=v2.1.0
+ARG UNCOVER_VERSION=3f7b74af20b24a7d5477d1dc77f6ba881219b0de
 
 ENV CGO_ENABLED=1 \
     GOBIN=/out
@@ -22,6 +23,7 @@ RUN apt-get update && \
     go install github.com/projectdiscovery/katana/cmd/katana@${KATANA_VERSION} && \
     go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDER_VERSION} && \
     go install github.com/projectdiscovery/dnsx/cmd/dnsx@${DNSX_VERSION} && \
+    go install github.com/projectdiscovery/uncover/cmd/uncover@${UNCOVER_VERSION} && \
     go install github.com/zan8in/afrog/v3/cmd/afrog@${AFROG_VERSION} && \
     go install github.com/ffuf/ffuf/v2@${FFUF_VERSION}
 
@@ -38,11 +40,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/ /usr/local/bin/
-COPY entrypoint.sh run-scan.sh prepare_targets.py summarize.py /opt/scanner/
+COPY entrypoint.sh run-scan.sh prepare_targets.py uncover_assets.py summarize.py /opt/scanner/
 COPY wordlists/high-value-paths.txt /opt/scanner/wordlists/high-value-paths.txt
 
 RUN chmod +x /opt/scanner/entrypoint.sh /opt/scanner/run-scan.sh && \
-    mkdir -p /work/results /root/.config /root/nuclei-templates /opt/pocs/nuclei /opt/pocs/afrog
+    mkdir -p /work/results /root/.config /root/nuclei-templates /opt/pocs/nuclei /opt/pocs/afrog /run/secrets
 
 WORKDIR /work
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/scanner/entrypoint.sh"]
