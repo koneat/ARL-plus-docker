@@ -44,6 +44,7 @@ case "$MODE" in
     TOP_PORTS="100"
     SUBFINDER_ALL="false"
     SUBFINDER_RECURSIVE="false"
+    NAABU_SERVICE_VERSION="false"
     KATANA_DEPTH="2"
     KATANA_JS="false"
     NUCLEI_SEVERITY="high,critical"
@@ -57,6 +58,7 @@ case "$MODE" in
     TOP_PORTS="1000"
     SUBFINDER_ALL="false"
     SUBFINDER_RECURSIVE="false"
+    NAABU_SERVICE_VERSION="true"
     KATANA_DEPTH="3"
     KATANA_JS="true"
     NUCLEI_SEVERITY="medium,high,critical"
@@ -70,6 +72,7 @@ case "$MODE" in
     TOP_PORTS="1000"
     SUBFINDER_ALL="true"
     SUBFINDER_RECURSIVE="true"
+    NAABU_SERVICE_VERSION="true"
     KATANA_DEPTH="5"
     KATANA_JS="true"
     NUCLEI_SEVERITY="low,medium,high,critical"
@@ -86,6 +89,7 @@ case "$MODE" in
 esac
 
 TOP_PORTS="${TOP_PORTS_OVERRIDE:-$TOP_PORTS}"
+NAABU_SERVICE_VERSION="${NAABU_SERVICE_VERSION_OVERRIDE:-$NAABU_SERVICE_VERSION}"
 NUCLEI_SEVERITY="${NUCLEI_SEVERITY_OVERRIDE:-$NUCLEI_SEVERITY}"
 AFROG_SEVERITY="${AFROG_SEVERITY_OVERRIDE:-$AFROG_SEVERITY}"
 SCAN_URL_LIMIT="${SCAN_URL_LIMIT_OVERRIDE:-$SCAN_URL_LIMIT}"
@@ -96,6 +100,7 @@ SCAN_URL_LIMIT="${SCAN_URL_LIMIT_OVERRIDE:-$SCAN_URL_LIMIT}"
   echo "started_at=$(date -Iseconds)"
   echo "target_file=${TARGET_FILE}"
   echo "top_ports=${TOP_PORTS}"
+  echo "naabu_service_version=${NAABU_SERVICE_VERSION}"
   echo "scan_url_limit=${SCAN_URL_LIMIT}"
   echo "nuclei_severity=${NUCLEI_SEVERITY}"
 } >"$OUT/manifest.txt"
@@ -152,17 +157,27 @@ naabu_stage() {
   else
     args+=(-top-ports "$TOP_PORTS")
   fi
+  if enabled "$NAABU_SERVICE_VERSION"; then
+    args+=(-sV -sV-fast -sV-workers 20)
+  fi
   naabu "${args[@]}"
 }
 
 if enabled "${ENABLE_NAABU:-true}"; then
-  run_stage "TCP 端口发现 naabu（connect scan）" naabu_stage
+  run_stage "TCP 端口与服务发现 naabu（connect scan）" naabu_stage
 else
   : >"$OUT/naabu.jsonl"
 fi
 
 if [[ -s "$OUT/naabu.jsonl" ]]; then
-  jq -r 'select(.host and .port) | "\(.host):\(.port)"' "$OUT/naabu.jsonl" | sort -u >"$OUT/open-services.txt" || true
+  jq -r '
+    (.host // .ip // empty) as $host
+    | select(($host | length) > 0 and (.port != null))
+    | if ($host | contains(":"))
+      then "[\($host)]:\(.port)"
+      else "\($host):\(.port)"
+      end
+  ' "$OUT/naabu.jsonl" | sort -u >"$OUT/open-services.txt" || true
 else
   : >"$OUT/open-services.txt"
 fi
@@ -198,6 +213,9 @@ katana_stage() {
     -list "$OUT/live-urls.txt"
     -silent
     -depth "$KATANA_DEPTH"
+    -field-scope rdn
+    -ignore-query-params
+    -filter-similar
     -concurrency 10
     -parallelism 10
     -timeout 10
