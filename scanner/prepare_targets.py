@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -12,6 +13,24 @@ HOST_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
     r"[a-zA-Z]{2,63}$"
 )
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise SystemExit(f"{name} 必须是正整数") from exc
+    if value < 1:
+        raise SystemExit(f"{name} 必须是正整数")
+    return value
 
 
 def unique(items: list[str]) -> list[str]:
@@ -95,6 +114,10 @@ def main() -> int:
     if not args.input.is_file():
         raise SystemExit(f"目标文件不存在: {args.input}")
 
+    allow_large_cidr = env_bool("ALLOW_LARGE_CIDR", False)
+    max_ipv4_addresses = env_positive_int("MAX_IPV4_CIDR_ADDRESSES", 4096)
+    max_ipv6_addresses = env_positive_int("MAX_IPV6_CIDR_ADDRESSES", 256)
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     raw_targets: list[str] = []
@@ -127,7 +150,11 @@ def main() -> int:
                 domains.append(host)
         elif kind == "domain":
             hosts.append(normalized)
-            domains.append(normalized.rsplit(":", 1)[0] if normalized.rsplit(":", 1)[-1].isdigit() else normalized)
+            domains.append(
+                normalized.rsplit(":", 1)[0]
+                if normalized.rsplit(":", 1)[-1].isdigit()
+                else normalized
+            )
             http_probes.append(normalized)
             raw_targets.append(normalized)
         elif kind == "ip":
@@ -136,6 +163,14 @@ def main() -> int:
             http_probes.append(normalized)
             raw_targets.append(normalized)
         else:
+            network = ipaddress.ip_network(normalized, strict=False)
+            limit = max_ipv4_addresses if network.version == 4 else max_ipv6_addresses
+            if not allow_large_cidr and network.num_addresses > limit:
+                rejected.append(
+                    f"{raw.strip()}\tCIDR过大:{network.num_addresses}>允许值{limit};"
+                    "设置ALLOW_LARGE_CIDR=true后才会扫描"
+                )
+                continue
             hosts.append(normalized)
             cidrs.append(normalized)
             raw_targets.append(normalized)
