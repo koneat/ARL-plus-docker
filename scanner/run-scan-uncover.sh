@@ -51,7 +51,7 @@ resolve_engines() {
   local found=()
   for engine in \
     shodan censys fofa quake hunter zoomeye netlas criminalip publicwww \
-    hunterhow google onyphe driftnet daydaymap nerdydata; do
+    hunterhow google onyphe driftnet daydaymap; do
     if grep -Eq "^[[:space:]]*${engine}:[[:space:]]*$" "$PROVIDER_CONFIG"; then
       found+=("$engine")
     fi
@@ -136,6 +136,11 @@ cat \
   sed '/^[[:space:]]*$/d' | sort -u >"$AUGMENTED_TARGETS"
 
 /opt/scanner/run-scan.sh "$AUGMENTED_TARGETS" "$MODE"
+
+{
+  printf 'uncover='
+  uncover -version 2>&1 | head -n 1 || true
+} >>"$OUT/manifest.txt"
 
 if [[ "$UNCOVER_FAILED" == "true" ]]; then
   printf 'Uncover 多引擎资产聚合\trc=partial-or-failed\n' >>"$OUT/errors.log"
