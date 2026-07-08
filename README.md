@@ -29,9 +29,14 @@ docker-compose up -d --build
 PS:
 由于近期dockerHub问题，现将相关镜像放到网盘，可解压为.tar文件后执行`docker load -i xxx.tar`即可部署，可在公众号回复`ARL-plus`获取地址
 
-# MCP：让 AI 连接并操作 ARL
+# MCP：本机免认证，外部强制 Token
 
-MCP 服务使用 ARL 官方 REST API，不直接写 MongoDB，也不绕过 Celery/任务状态机。默认仅监听宿主机 `127.0.0.1:5013`、强制 Bearer Token，并启用只读模式。
+MCP 服务使用 ARL 官方 REST API，不直接写 MongoDB，也不绕过 Celery/任务状态机。为避免 Docker、Nginx 或 Cloudflare Tunnel 把外网请求误判成本机请求，仓库使用两个物理隔离的入口：
+
+- 本机入口：`127.0.0.1:5013`，默认免 Token。
+- 外部入口：`127.0.0.1:5014`，无条件强制 Bearer Token；Nginx、Caddy、Cloudflare Tunnel 必须转发到这个端口。
+
+不要把外部域名或隧道转发到 `5013`。
 
 ## 1. 配置 ARL API Key
 
@@ -57,45 +62,69 @@ cp .env.example .env
 vim .env
 ```
 
-建议设置：
+建议配置：
 
 ```dotenv
+MCP_LOCAL_BIND_IP=127.0.0.1
+MCP_LOCAL_PORT=5013
+MCP_ALLOW_LOCAL_UNAUTHENTICATED=true
+
+MCP_EXTERNAL_BIND_IP=127.0.0.1
+MCP_EXTERNAL_PORT=5014
 MCP_TOKEN=替换为至少32字节的随机字符串
+
 ARL_API_KEY=与config-docker.yaml中的ARL.API_KEY一致
 MCP_READ_ONLY=true
 ```
 
-`MCP_TOKEN` 留空也可以。容器首次启动会自动生成 token，保存在 Docker 卷 `arl_mcp_data` 中。
+`MCP_TOKEN` 留空也可以。外部 MCP 容器首次启动会自动生成 Token，并保存到 Docker 卷 `arl_mcp_data` 中。
+
+如需让本机入口也强制 Token：
+
+```dotenv
+MCP_ALLOW_LOCAL_UNAUTHENTICATED=false
+```
 
 ## 3. 启动
 
 ```bash
-docker-compose up -d --build mcp
+docker compose up -d --build mcp-local mcp
 ```
 
 检查状态：
 
 ```bash
-docker-compose ps mcp
-curl http://127.0.0.1:5013/healthz
+docker compose ps mcp-local mcp
+curl -fsS http://127.0.0.1:5013/healthz
+curl -fsS http://127.0.0.1:5014/healthz
 ```
 
 查看自动生成的 MCP Token：
 
 ```bash
-docker-compose exec mcp cat /data/token
+docker compose exec mcp cat /data/token
 ```
 
-MCP 地址：
+## 4. 验证认证边界
 
-```text
-http://127.0.0.1:5013/mcp
+本机入口不带 Token 应可访问：
+
+```bash
+curl -i http://127.0.0.1:5013/mcp
 ```
 
-客户端请求头：
+外部入口不带 Token 必须返回 `401 Unauthorized`：
 
-```text
-Authorization: Bearer <MCP_TOKEN>
+```bash
+curl -i http://127.0.0.1:5014/mcp
+```
+
+外部入口携带 Token：
+
+```bash
+curl -i \
+  -H "Authorization: Bearer $MCP_TOKEN" \
+  http://127.0.0.1:5014/mcp
 ```
 
 也兼容：
@@ -104,7 +133,7 @@ Authorization: Bearer <MCP_TOKEN>
 X-MCP-Token: <MCP_TOKEN>
 ```
 
-## 4. 开放任务操作
+## 5. 开放任务操作
 
 默认 `MCP_READ_ONLY=true`，AI 只能查询。确认连接和权限均正确后，再修改 `.env`：
 
@@ -112,10 +141,10 @@ X-MCP-Token: <MCP_TOKEN>
 MCP_READ_ONLY=false
 ```
 
-然后重启：
+然后重启两个入口：
 
 ```bash
-docker-compose up -d --force-recreate mcp
+docker compose up -d --force-recreate mcp-local mcp
 ```
 
 写模式只开放：
@@ -126,7 +155,7 @@ docker-compose up -d --force-recreate mcp
 
 没有开放删除任务、任意 HTTP 代理或直接 MongoDB 写入工具。
 
-## 5. 已提供的 MCP 工具
+## 6. 已提供的 MCP 工具
 
 - `arl_health`：检查 ARL 连通性和认证状态
 - `arl_list_tasks`：查询任务列表
@@ -137,25 +166,38 @@ docker-compose up -d --force-recreate mcp
 - `arl_stop_task`：停止任务，要求写模式
 - `arl_restart_task`：重启任务，要求写模式
 
-## 6. AI 客户端示例
+## 7. AI 客户端示例
 
-支持 Streamable HTTP MCP 的客户端均连接：
+本机客户端连接：
 
 ```text
 URL: http://127.0.0.1:5013/mcp
+Header: 不需要
+```
+
+远程客户端连接外部域名，反向代理必须指向 `127.0.0.1:5014`：
+
+```text
+URL: https://mcp.example.com/mcp
 Header: Authorization: Bearer <MCP_TOKEN>
 ```
 
-例如 Claude Code 可按其 HTTP MCP 配置方式添加该地址。不同客户端的配置字段名称可能不同，但 URL 和 Bearer Token 不变。
+## 8. 远程连接安全要求
 
-## 7. 远程连接安全要求
+推荐让 Nginx、Caddy 或 Cloudflare Tunnel 连接 `127.0.0.1:5014`，并由反向代理提供 TLS。此时保持：
 
-默认不要把 `5013` 直接暴露到公网。需要远程连接时：
+```dotenv
+MCP_EXTERNAL_BIND_IP=127.0.0.1
+MCP_EXTERNAL_PORT=5014
+```
 
-1. 使用可信隧道、VPN，或带 TLS 的 Nginx/Caddy 反向代理。
-2. 再把 `.env` 中的 `MCP_BIND_IP` 改为 `0.0.0.0`。
-3. 必须保留 `MCP_ALLOW_UNAUTHENTICATED=false`，并使用高强度 `MCP_TOKEN`。
-4. 首次接入建议保持 `MCP_READ_ONLY=true`。
+确需直接监听公网时才设置：
+
+```dotenv
+MCP_EXTERNAL_BIND_IP=0.0.0.0
+```
+
+外部入口在 Compose 中硬编码 `MCP_ALLOW_UNAUTHENTICATED=false`，不会被 `.env` 意外改成免认证。首次远程接入仍建议保持 `MCP_READ_ONLY=true`。
 
 # 分布式安装方式
 参考文章： https://mp.weixin.qq.com/s/0q4WLmVWGW6VQpZnRx9EUA
@@ -184,7 +226,9 @@ vim config-docker.yaml
 [服务器推荐地址在线表格]
 
 [华为云活动地址]
+
 [京东云活动地址]
+
 [腾讯云活动地址]
 更改方式
 ```
@@ -205,7 +249,7 @@ vim docker-compose.yml
 
 2. 新建项目报错
 摸摸钱包鼓不鼓，看看日志是不是这种原因
-![image](https://github.com/user-attachments/assets/4abfb257-3e8e-4387-8350-9daaa117666a)
+![image](https://github.com/user-attachments/assets/fcf95fda-298c-448b-93e4-006137bfb76a)
 ![fe952ce8b5ce0e01ea08c0440b9c49da](https://github.com/user-attachments/assets/fcf95fda-298c-448b-93e4-006137bfb76a)
 
 
