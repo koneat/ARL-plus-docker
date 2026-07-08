@@ -1,0 +1,61 @@
+services:
+  scanner:
+    build:
+      context: ./scanner
+      args:
+        NUCLEI_VERSION: ${NUCLEI_VERSION:-v3.11.0}
+        HTTPX_VERSION: ${HTTPX_VERSION:-v1.9.0}
+        NAABU_VERSION: ${NAABU_VERSION:-v2.6.1}
+        KATANA_VERSION: ${KATANA_VERSION:-v1.6.1}
+        SUBFINDER_VERSION: ${SUBFINDER_VERSION:-v2.14.0}
+        DNSX_VERSION: ${DNSX_VERSION:-v1.2.3}
+        AFROG_VERSION: ${AFROG_VERSION:-v3.5.3}
+        FFUF_VERSION: ${FFUF_VERSION:-v2.1.0}
+    image: arl-plus-scanner:2026.07
+    profiles:
+      - scanner
+    working_dir: /work
+    environment:
+      TZ: Asia/Shanghai
+      HOME: /root
+      SCAN_MODE: ${SCAN_MODE:-standard}
+      UPDATE_TEMPLATES: ${UPDATE_TEMPLATES:-true}
+      ENABLE_SUBFINDER: ${ENABLE_SUBFINDER:-true}
+      ENABLE_NAABU: ${ENABLE_NAABU:-true}
+      ENABLE_KATANA: ${ENABLE_KATANA:-true}
+      ENABLE_SOURCEMAP: ${ENABLE_SOURCEMAP:-true}
+      ENABLE_NUCLEI: ${ENABLE_NUCLEI:-true}
+      ENABLE_AFROG: ${ENABLE_AFROG:-true}
+      ENABLE_FFUF: ${ENABLE_FFUF:-true}
+      NUCLEI_RATE_LIMIT: ${NUCLEI_RATE_LIMIT:-120}
+      HTTPX_RATE_LIMIT: ${HTTPX_RATE_LIMIT:-150}
+      NAABU_RATE: ${NAABU_RATE:-500}
+      FFUF_RATE: ${FFUF_RATE:-50}
+      FFUF_MAX_TARGETS: ${FFUF_MAX_TARGETS:-100}
+      ALLOW_LARGE_CIDR: ${ALLOW_LARGE_CIDR:-false}
+      MAX_IPV4_CIDR_ADDRESSES: ${MAX_IPV4_CIDR_ADDRESSES:-4096}
+      MAX_IPV6_CIDR_ADDRESSES: ${MAX_IPV6_CIDR_ADDRESSES:-256}
+      CUSTOM_PORTS: ${CUSTOM_PORTS:-}
+      TOP_PORTS_OVERRIDE: ${TOP_PORTS_OVERRIDE:-}
+      NAABU_SERVICE_VERSION_OVERRIDE: ${NAABU_SERVICE_VERSION_OVERRIDE:-}
+      SCAN_URL_LIMIT_OVERRIDE: ${SCAN_URL_LIMIT_OVERRIDE:-}
+      NUCLEI_SEVERITY_OVERRIDE: ${NUCLEI_SEVERITY_OVERRIDE:-}
+      AFROG_SEVERITY_OVERRIDE: ${AFROG_SEVERITY_OVERRIDE:-}
+    volumes:
+      - ./scan-results:/work/results
+      - ./scanner-cache/config:/root/.config
+      - ./scanner-cache/nuclei-templates:/root/nuclei-templates
+      - ./scanner-pocs/nuclei:/opt/pocs/nuclei:ro
+      - ./scanner-pocs/afrog:/opt/pocs/afrog:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    command:
+      - sleep
+      - infinity

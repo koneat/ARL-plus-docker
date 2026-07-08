@@ -1,0 +1,138 @@
+name: scanner-validate
+
+on:
+  pull_request:
+    paths:
+      - 'docker-compose.scanner.yml'
+      - 'scanner/**'
+      - 'scripts/scan-enhanced.sh'
+      - 'SCANNER.md'
+      - '.github/workflows/scanner-validate.yml'
+  push:
+    branches:
+      - feat/scanner-practical-upgrade
+    paths:
+      - 'docker-compose.scanner.yml'
+      - 'scanner/**'
+      - 'scripts/scan-enhanced.sh'
+      - 'SCANNER.md'
+      - '.github/workflows/scanner-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate shell syntax
+        run: |
+          bash -n scanner/entrypoint.sh
+          bash -n scanner/run-scan.sh
+          bash -n scripts/scan-enhanced.sh
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile scanner/prepare_targets.py scanner/summarize.py
+
+      - name: Test target normalization
+        run: |
+          tmp="$(mktemp -d)"
+          cat >"$tmp/targets.txt" <<'EOF'
+          example.com
+          example.com:8443
+          https://api.example.com/v1?q=1
+          192.0.2.10
+          192.0.2.0/30
+          10.0.0.0/8
+          2001:db8::1
+          invalid target
+          EOF
+          sed -i 's/^          //' "$tmp/targets.txt"
+          python scanner/prepare_targets.py "$tmp/targets.txt" "$tmp/out"
+          grep -qx 'example.com' "$tmp/out/domains.txt"
+          grep -qx '192.0.2.10' "$tmp/out/ips.txt"
+          grep -qx '2001:db8::1' "$tmp/out/ips.txt"
+          grep -qx '192.0.2.0/30' "$tmp/out/cidrs.txt"
+          ! grep -Fqx '10.0.0.0/8' "$tmp/out/cidrs.txt"
+          grep -Fq '10.0.0.0/8' "$tmp/out/rejected.txt"
+          grep -qx 'https://api.example.com/v1?q=1' "$tmp/out/urls.seed.txt"
+          ! grep -Fqx '192.0.2.0/30' "$tmp/out/http-probe.txt"
+          grep -qx 'invalid target' "$tmp/out/rejected.txt"
+
+      - name: Test result summarizer
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/ffuf"
+          cat >"$tmp/target-counts.json" <<'EOF'
+          {"normalized": 2, "domains": 1, "ips": 1}
+          EOF
+          cat >"$tmp/nuclei.jsonl" <<'EOF'
+          {"info":{"severity":"high"}}
+          {"info":{"severity":"critical"}}
+          EOF
+          cat >"$tmp/sourcemaps.jsonl" <<'EOF'
+          {"url":"https://example.com/app.js.map"}
+          EOF
+          cat >"$tmp/ffuf/a.json" <<'EOF'
+          {"results":[{"status":200},{"status":403}]}
+          EOF
+          python scanner/summarize.py "$tmp"
+          grep -q 'Sourcemap 泄露：1' "$tmp/summary.md"
+          grep -q 'critical: 1' "$tmp/summary.md"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["ffuf_findings"] == 2 and d["sourcemaps"] == 1' "$tmp/summary.json"
+
+      - name: Validate Compose rendering
+        run: |
+          mkdir -p scan-results scanner-cache/config scanner-cache/nuclei-templates scanner-pocs/nuclei scanner-pocs/afrog
+          docker compose -f docker-compose.scanner.yml --profile scanner config >/tmp/scanner-compose.yml
+          grep -q 'arl-plus-scanner:2026.07' /tmp/scanner-compose.yml
+          ! grep -q '^    ports:' /tmp/scanner-compose.yml
+
+      - name: Enforce scanner isolation and safety
+        run: |
+          ! grep -R --line-number -E 'docker compose (down|restart)|mongodb|rabbitmq|mcp-local|arl_web|arl_worker' \
+            scanner scripts/scan-enhanced.sh docker-compose.scanner.yml
+          grep -q -- '-exclude-tags dos' scanner/run-scan.sh
+          grep -q 'cap_drop:' docker-compose.scanner.yml
+          grep -q 'no-new-privileges:true' docker-compose.scanner.yml
+
+  image-build:
+    needs: static-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare bind-mount directories
+        run: |
+          mkdir -p scan-results scanner-cache/config scanner-cache/nuclei-templates scanner-pocs/nuclei scanner-pocs/afrog
+
+      - name: Build scanner image
+        run: |
+          docker compose -f docker-compose.scanner.yml --profile scanner build --progress plain scanner
+
+      - name: Smoke-test scanner binaries
+        env:
+          UPDATE_TEMPLATES: 'false'
+        run: |
+          docker compose -f docker-compose.scanner.yml --profile scanner run --rm scanner bash -lc '
+            set -e
+            for tool in subfinder dnsx naabu httpx katana nuclei afrog ffuf nmap; do
+              command -v "$tool"
+            done
+            python3 -m py_compile /opt/scanner/prepare_targets.py /opt/scanner/summarize.py
+            bash -n /opt/scanner/run-scan.sh
+          '

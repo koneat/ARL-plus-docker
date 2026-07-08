@@ -1,0 +1,6 @@
+scan-results/
+scanner-cache/
+scanner-pocs/nuclei/*
+scanner-pocs/afrog/*
+!scanner-pocs/nuclei/.gitkeep
+!scanner-pocs/afrog/.gitkeep
