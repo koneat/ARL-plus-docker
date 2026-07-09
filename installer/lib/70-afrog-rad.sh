@@ -63,7 +63,7 @@ set -e
 if [[ -s "\$OUTPUT" ]]; then
   ln -sfn "\$(basename "\$OUTPUT")" "\${REPORT_ROOT}/afrog/latest.html"
 fi
-/usr/local/bin/arl-report-index
+ARL_REPORT_ROOT="\$REPORT_ROOT" /usr/local/bin/arl-report-index
 if [[ "\${REPORT_WORLD_READABLE:-false}" == "true" ]]; then
   chmod -R a+rX "\$REPORT_ROOT"
 else
