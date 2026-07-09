@@ -71,7 +71,10 @@ PY
     chmod -R a+rX "$REPORT_ROOT"
     warn "扫描报告已设为宿主机全局可读；报告可能包含敏感资产信息"
   else
-    find "$REPORT_ROOT" -type d -exec chmod 0750 {} +
+    # 父目录仅允许路径穿越，普通用户无法列目录或读取报告内容。
+    # 长亭 xray 的独立服务账户需要穿过 REPORT_ROOT 才能访问自己的 xray 子目录。
+    chmod 0711 "$REPORT_ROOT"
+    find "$REPORT_ROOT" -mindepth 1 -type d -exec chmod 0750 {} +
     find "$REPORT_ROOT" -type f -exec chmod 0640 {} +
   fi
   ok "报告目录已准备：$REPORT_ROOT"
