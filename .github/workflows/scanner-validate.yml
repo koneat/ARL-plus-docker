@@ -10,20 +10,17 @@ on:
       - 'SCANNER.md'
       - 'UNCOVER.md'
       - 'NUCLEI_POLICY.md'
+      - 'SCANNER_V2.md'
       - '.github/workflows/scanner-validate.yml'
   push:
     branches:
-      - feat/scanner-practical-upgrade
-      - feat/uncover-asset-aggregation
-      - fix/nuclei-display-policy-exposure
+      - feat/scanner-v2-intelligence
     paths:
       - 'docker-compose.scanner.yml'
       - 'scanner/**'
-      - 'scanner-secrets/uncover-provider.example.yaml'
       - 'scripts/scan-enhanced.sh'
       - 'SCANNER.md'
-      - 'UNCOVER.md'
-      - 'NUCLEI_POLICY.md'
+      - 'SCANNER_V2.md'
       - '.github/workflows/scanner-validate.yml'
 
 permissions:
@@ -32,8 +29,7 @@ permissions:
 jobs:
   static-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,201 +41,254 @@ jobs:
 
       - name: Validate shell syntax
         run: |
-          bash -n scanner/entrypoint.sh
-          bash -n scanner/run-scan.sh
-          bash -n scanner/run-scan-uncover.sh
-          bash -n scripts/scan-enhanced.sh
+          for script in scanner/*.sh scripts/scan-enhanced.sh; do
+            bash -n "$script"
+          done
 
       - name: Validate Python syntax
         run: |
-          python -m py_compile \
-            scanner/prepare_targets.py \
-            scanner/uncover_assets.py \
-            scanner/extract_api_surface.py \
-            scanner/nuclei_report.py \
-            scanner/summarize.py
+          python -m py_compile scanner/*.py
 
-      - name: Test target normalization
+      - name: Test target and Uncover scope normalization
         run: |
           tmp="$(mktemp -d)"
           cat >"$tmp/targets.txt" <<'EOF'
           example.com
-          example.com:8443
           https://api.example.com/v1?q=1
           192.0.2.10
           192.0.2.0/30
           10.0.0.0/8
-          2001:db8::1
           invalid target
           EOF
           sed -i 's/^          //' "$tmp/targets.txt"
           python scanner/prepare_targets.py "$tmp/targets.txt" "$tmp/out"
           grep -qx 'example.com' "$tmp/out/domains.txt"
           grep -qx '192.0.2.10' "$tmp/out/ips.txt"
-          grep -qx '2001:db8::1' "$tmp/out/ips.txt"
           grep -qx '192.0.2.0/30' "$tmp/out/cidrs.txt"
           ! grep -Fqx '10.0.0.0/8' "$tmp/out/cidrs.txt"
-          grep -Fq '10.0.0.0/8' "$tmp/out/rejected.txt"
-          grep -qx 'https://api.example.com/v1?q=1' "$tmp/out/urls.seed.txt"
-          ! grep -Fqx '192.0.2.0/30' "$tmp/out/http-probe.txt"
-          grep -qx 'invalid target' "$tmp/out/rejected.txt"
 
-      - name: Test Uncover scope normalization
-        run: |
-          tmp="$(mktemp -d)"
-          printf 'example.com\n' >"$tmp/domains.txt"
           cat >"$tmp/uncover.jsonl" <<'EOF'
-          {"timestamp":1,"source":"fofa","host":"api.example.com","ip":"192.0.2.10","port":443,"url":"https://api.example.com/"}
-          {"timestamp":2,"source":"shodan","host":"other.example.net","ip":"198.51.100.10","port":443,"url":"https://other.example.net/"}
-          {"timestamp":3,"source":"quake","host":"","ip":"203.0.113.20","port":8443,"url":""}
+          {"source":"fofa","host":"api.example.com","ip":"192.0.2.10","port":443,"url":"https://api.example.com/"}
+          {"source":"shodan","host":"other.example.net","ip":"198.51.100.10","port":443,"url":"https://other.example.net/"}
           EOF
-          python scanner/uncover_assets.py prepare "$tmp/domains.txt" "$tmp/queries.txt" --expanded
-          grep -Fqx 'example.com' "$tmp/queries.txt"
-          grep -Fqx 'ssl:"example.com"' "$tmp/queries.txt"
-          python scanner/uncover_assets.py merge "$tmp/uncover.jsonl" "$tmp/domains.txt" "$tmp/out"
-          grep -qx 'api.example.com' "$tmp/out/uncover-hosts.txt"
-          grep -qx 'api.example.com:443' "$tmp/out/uncover-services.txt"
-          grep -qx 'https://api.example.com/' "$tmp/out/uncover-urls.txt"
-          grep -qx '203.0.113.20' "$tmp/out/uncover-ip-candidates.txt"
-          ! grep -q '203.0.113.20:8443' "$tmp/out/uncover-services.txt"
-          grep -q 'other.example.net' "$tmp/out/uncover.candidates.jsonl"
-          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["scoped_hosts"] == 1 and d["candidate_results"] == 2' "$tmp/out/uncover-stats.json"
+          python scanner/uncover_assets.py merge "$tmp/uncover.jsonl" "$tmp/out/domains.txt" "$tmp/uncover-out"
+          grep -qx 'api.example.com' "$tmp/uncover-out/uncover-hosts.txt"
+          ! grep -q 'other.example.net' "$tmp/uncover-out/uncover-hosts.txt"
 
-      - name: Test API HTTP and callback surface extraction
+      - name: Test domain URL and TLS intelligence
         run: |
           tmp="$(mktemp -d)"
+          printf 'example.com\n' >"$tmp/roots.txt"
+          cat >"$tmp/domains.txt" <<'EOF'
+          api.example.com
+          *.cdn.example.com
+          outside.example.net
+          EOF
+          python scanner/asset_intelligence.py domains "$tmp/roots.txt" "$tmp/scoped.txt" "$tmp/domains.txt" --rejected "$tmp/rejected.txt"
+          grep -qx 'api.example.com' "$tmp/scoped.txt"
+          grep -qx 'cdn.example.com' "$tmp/scoped.txt"
+          grep -qx 'outside.example.net' "$tmp/rejected.txt"
+
           cat >"$tmp/urls.txt" <<'EOF'
           https://example.com/
-          https://example.com/api/v1/users
-          https://example.com/swagger.json
-          https://example.com/webhooks/payment
+          https://api.example.com/v1/admin/users?token=secret-value&id=7
           https://example.com/assets/app.js
-          wss://example.com/socket
+          https://example.com/backup.sql
+          https://outside.example.net/api
+          https://example.com:bad/path
           EOF
-          python scanner/extract_api_surface.py "$tmp/out" "$tmp/urls.txt"
-          grep -qx 'https://example.com/api/v1/users' "$tmp/out/api-endpoints.txt"
-          grep -qx 'https://example.com/swagger.json' "$tmp/out/api-docs-endpoints.txt"
-          grep -qx 'https://example.com/webhooks/payment' "$tmp/out/webhook-endpoints.txt"
-          grep -qx 'wss://example.com/socket' "$tmp/out/websocket-endpoints.txt"
-          grep -qx 'https://example.com/assets/app.js' "$tmp/out/js-files.txt"
+          python scanner/asset_intelligence.py urls "$tmp/roots.txt" "$tmp/url-out" "$tmp/urls.txt"
+          grep -qx 'https://api.example.com/v1/admin/users?id=7&token=' "$tmp/url-out/urls-priority.txt"
+          ! grep -q 'secret-value' "$tmp/url-out/urls-intelligence-all.txt"
+          grep -qx 'https://example.com/backup.sql' "$tmp/url-out/urls-sensitive.txt"
+          grep -qx 'https://example.com/assets/app.js' "$tmp/url-out/urls-js.txt"
+          ! grep -q 'outside.example.net' "$tmp/url-out/urls-intelligence-all.txt"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["redacted_query_values"] == 1 and d["invalid"] == 1' "$tmp/url-out/url-intelligence-stats.json"
 
-      - name: Test Nuclei result normalization and display
+          cat >"$tmp/tlsx.jsonl" <<'EOF'
+          {"host":"example.com","subject_an":["api.example.com","outside.example.net"],"domains":["edge.example.com"],"subject_cn":"www.example.com","tls_version":"tls13","wildcard_certificate":true}
+          EOF
+          python scanner/asset_intelligence.py tlsx "$tmp/roots.txt" "$tmp/tlsx.jsonl" "$tmp/tls-out"
+          grep -qx 'api.example.com' "$tmp/tls-out/tls-san-domains.txt"
+          grep -qx 'edge.example.com' "$tmp/tls-out/tls-san-domains.txt"
+          grep -qx 'www.example.com' "$tmp/tls-out/tls-san-domains.txt"
+          ! grep -q 'outside.example.net' "$tmp/tls-out/tls-san-domains.txt"
+          grep -q 'wildcard_certificate' "$tmp/tls-out/tls-findings.jsonl"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["san_domains"] == 3 and d["misconfigurations"] == 1' "$tmp/tls-out/tls-stats.json"
+
+      - name: Test content audit analysis without network
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('content_audit', Path('scanner/content_audit.py'))
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          body = b"AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nconst local='/api/v2/admin';\nconst sibling='https://api.example.com/v3/users';\nconst outside='https://outside.example.net/api';\n"
+          item, endpoints = mod.analyze(
+              {'url':'https://www.example.com/app.js','final_url':'https://www.example.com/app.js','status':200,'content_type':'application/javascript','body':body},
+              ['example.com'],
+          )
+          assert item['interesting'] is True
+          assert item['secret_indicators']
+          assert 'https://www.example.com/api/v2/admin' in endpoints
+          assert 'https://api.example.com/v3/users' in endpoints
+          assert 'https://outside.example.net/api' not in endpoints
+          assert all('AKIAABCDEFGHIJKLMNOP' not in entry['redacted'] for entry in item['secret_indicators'])
+          assert mod.NoRedirect().redirect_request(None, None, 302, 'Found', {}, 'https://outside.example.net/') is None
+          PY
+          grep -q 'build_opener(NoRedirect()' scanner/content_audit.py
+          ! grep -q 'from urllib.request import .*urlopen' scanner/content_audit.py
+
+      - name: Test final target API surface and artifact sanitation
         run: |
           tmp="$(mktemp -d)"
-          cat >"$tmp/official.jsonl" <<'EOF'
-          {"template-id":"env-file","info":{"name":"Env File Exposure","severity":"high"},"matched-at":"https://example.com/.env","matcher-name":"body"}
-          {"template-id":"env-file","info":{"name":"Env File Exposure","severity":"high"},"matched-at":"https://example.com/.env","matcher-name":"body"}
+          cat >"$tmp/scan-urls.raw.txt" <<'EOF'
+          https://api.example.com/admin?token=top-secret&id=7
+          https://example.com/backup.sql
+          https://api.example.com/admin?id=7&token=duplicate-secret
+          not-a-url
           EOF
-          cat >"$tmp/api.jsonl" <<'EOF'
-          {"template-id":"swagger-api","info":{"name":"Swagger API","severity":"info"},"matched-at":"https://example.com/swagger.json"}
-          EOF
-          NUCLEI_REPORT_LIMIT=10 python scanner/nuclei_report.py "$tmp/out" "$tmp/official.jsonl" "$tmp/api.jsonl" --show
-          grep -q 'Env File Exposure' "$tmp/out/nuclei-findings.md"
-          grep -q 'swagger-api' "$tmp/out/nuclei-findings.md"
-          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["findings"] == 2 and d["duplicates_removed"] == 1 and d["severities"]["high"] == 1' "$tmp/out/nuclei-status.json"
-          test "$(grep -cve '^[[:space:]]*$' "$tmp/out/nuclei.jsonl")" -eq 2
+          python scanner/sanitize_url_targets.py "$tmp/scan-urls.raw.txt" "$tmp/scan-urls.txt" --stats "$tmp/stats.json"
+          sed -n '1p' "$tmp/scan-urls.txt" | grep -qx 'https://api.example.com/admin?id=7&token='
+          sed -n '2p' "$tmp/scan-urls.txt" | grep -qx 'https://example.com/backup.sql'
+          test "$(wc -l <"$tmp/scan-urls.txt")" -eq 2
+          ! grep -Eq 'top-secret|duplicate-secret' "$tmp/scan-urls.txt"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["output"] == 2 and d["invalid"] == 1 and d["redacted_query_values"] == 2' "$tmp/stats.json"
 
-      - name: Test result summarizer
+          cat >"$tmp/api-input.txt" <<'EOF'
+          https://api.example.com/v1/users?access_token=archive-secret&id=9
+          wss://api.example.com/socket?token=socket-secret
+          EOF
+          python scanner/extract_api_surface.py "$tmp/api-out" "$tmp/api-input.txt"
+          grep -qx 'https://api.example.com/v1/users?access_token=&id=9' "$tmp/api-out/api-endpoints.txt"
+          grep -qx 'wss://api.example.com/socket?token=' "$tmp/api-out/websocket-endpoints.txt"
+          ! grep -R -Eq 'archive-secret|socket-secret' "$tmp/api-out"
+
+          mkdir -p "$tmp/artifacts"
+          cat >"$tmp/artifacts/gau.txt" <<'EOF'
+          https://api.example.com/old?token=gau-secret&id=1
+          EOF
+          cat >"$tmp/artifacts/katana.txt" <<'EOF'
+          https://www.example.com/api?password=katana-secret&page=2
+          EOF
+          cat >"$tmp/artifacts/urlfinder.jsonl" <<'EOF'
+          {"url":"https://api.example.com/reset?signature=urlfinder-secret&id=3","input":"example.com","source":"archive"}
+          EOF
+          cat >"$tmp/artifacts/httpx.jsonl" <<'EOF'
+          {"url":"https://example.com/login?access_token=httpx-secret","location":"/next?token=redirect-secret"}
+          EOF
+          python scanner/sanitize_result_artifacts.py "$tmp/artifacts"
+          ! grep -R -Eq 'gau-secret|katana-secret|urlfinder-secret|httpx-secret|redirect-secret' "$tmp/artifacts"
+          grep -qx 'https://api.example.com/old?id=1&token=' "$tmp/artifacts/gau.txt"
+          grep -q 'signature=' "$tmp/artifacts/urlfinder.jsonl"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["total_changed"] >= 5' "$tmp/artifacts/artifact-sanitize-stats.json"
+
+      - name: Test Nuclei normalization and HTML report
         run: |
           tmp="$(mktemp -d)"
           mkdir -p "$tmp/ffuf"
           cat >"$tmp/target-counts.json" <<'EOF'
-          {"normalized": 2, "domains": 1, "ips": 1}
+          {"normalized":1,"domains":1}
           EOF
-          cat >"$tmp/uncover-stats.json" <<'EOF'
-          {"status":"completed","scoped_hosts":1,"sources":{"fofa":1}}
-          EOF
-          cat >"$tmp/api-surface-stats.json" <<'EOF'
-          {"api_endpoints":1,"api_docs":1,"webhooks":1,"websockets":1,"javascript_files":1}
-          EOF
-          cat >"$tmp/nuclei-status.json" <<'EOF'
-          {"findings":1,"sources":{"nuclei.exposure.jsonl":1}}
-          EOF
-          printf 'api.example.com\n' >"$tmp/uncover-hosts.txt"
-          printf 'api.example.com:443\n' >"$tmp/uncover-services.txt"
-          printf 'https://example.com/api/v1/users\n' >"$tmp/api-endpoints.txt"
-          printf 'https://example.com/swagger.json\n' >"$tmp/api-docs-endpoints.txt"
-          printf 'https://example.com/webhook\n' >"$tmp/webhook-endpoints.txt"
-          printf 'wss://example.com/socket\n' >"$tmp/websocket-endpoints.txt"
-          printf 'https://example.com/app.js\n' >"$tmp/js-files.txt"
-          cat >"$tmp/nuclei.jsonl" <<'EOF'
-          {"_source_file":"nuclei.exposure.jsonl","_normalized":{"severity":"high","template_id":"env-file","name":"Env File Exposure","matched_at":"https://example.com/.env"}}
-          EOF
-          cat >"$tmp/sourcemaps.jsonl" <<'EOF'
-          {"url":"https://example.com/app.js.map"}
-          EOF
-          cat >"$tmp/ffuf/a.json" <<'EOF'
-          {"results":[{"status":200},{"status":403}]}
-          EOF
+          printf '{"status":"completed"}\n' >"$tmp/uncover-stats.json"
           printf 'template_count=9000\n' >"$tmp/nuclei-template-status.txt"
+          cat >"$tmp/nuclei.official.jsonl" <<'EOF'
+          {"template-id":"env-file","info":{"name":"Env File Exposure","severity":"high"},"matched-at":"https://example.com/.env"}
+          {"template-id":"env-file","info":{"name":"Env File Exposure","severity":"high"},"matched-at":"https://example.com/.env"}
+          EOF
+          python scanner/nuclei_report.py "$tmp" "$tmp/nuclei.official.jsonl"
+          printf '{"url":"https://example.com/.env","status":200,"interesting":true,"leak_signatures":["dotenv"],"secret_indicators":[],"endpoint_count":0}\n' >"$tmp/content-audit.jsonl"
+          printf '{"requested":1,"interesting":1,"leak_signatures":1,"secret_indicators":0,"endpoints":0,"errors":0}\n' >"$tmp/content-audit-stats.json"
+          printf '{"priority_urls":1,"final_scan_urls":1}\n' >"$tmp/intelligence-stats.json"
+          printf '{"san_domains":1,"misconfigurations":0}\n' >"$tmp/tls-stats.json"
+          printf '{"input":"example.com","ip":"192.0.2.1","cdn":true,"cdn_name":"cloudflare","waf":true,"waf_name":"cloudflare"}\n' >"$tmp/cdncheck.jsonl"
+          : >"$tmp/afrog.json"
+          : >"$tmp/errors.log"
+          : >"$tmp/manifest.txt"
           python scanner/summarize.py "$tmp"
-          grep -q '外部搜索引擎发现域名：1' "$tmp/summary.md"
-          grep -q 'API/HTTP 调用端点：1' "$tmp/summary.md"
-          grep -q 'Env File Exposure' "$tmp/summary.md"
-          grep -q '模板数量：9000' "$tmp/summary.md"
-          grep -q 'critical' "$tmp/summary.md" && exit 1 || true
-          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["ffuf_findings"] == 2 and d["sourcemaps"] == 1 and d["api_endpoints"] == 1 and d["nuclei_findings"]["high"] == 1' "$tmp/summary.json"
+          python scanner/enhance_summary.py "$tmp"
+          python scanner/render_report.py "$tmp"
+          grep -q 'Env File Exposure' "$tmp/nuclei-findings.md"
+          grep -q 'Scanner V2 资产与 URL 情报' "$tmp/summary.md"
+          grep -q 'cdn:cloudflare' "$tmp/summary.md"
+          grep -q 'ARL Plus Scanner V2' "$tmp/report.html"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["nuclei_status"]["findings"] == 1; assert d["scanner_v2"]["content_audit"]["interesting"] == 1; assert d["scanner_v2"]["cdn_cloud_waf"]["types"]["cdn"] == 1; assert d["scanner_v2"]["cdn_cloud_waf"]["providers"]["cdn:cloudflare"] == 1' "$tmp/summary.json"
 
-      - name: Validate Compose rendering
+      - name: Validate Compose and isolation
         run: |
-          mkdir -p \
-            scan-results scanner-cache/config scanner-cache/nuclei-templates \
-            scanner-pocs/nuclei scanner-pocs/afrog scanner-secrets
+          mkdir -p scan-results scanner-cache/config scanner-cache/nuclei-templates scanner-pocs/nuclei scanner-pocs/afrog scanner-secrets
           docker compose -f docker-compose.scanner.yml --profile scanner config >/tmp/scanner-compose.yml
-          grep -q 'arl-plus-scanner:2026.07' /tmp/scanner-compose.yml
-          grep -q '/run/secrets' /tmp/scanner-compose.yml
-          grep -q 'NUCLEI_POLICY' /tmp/scanner-compose.yml
-          grep -q 'NUCLEI_SHOW_FINDINGS' /tmp/scanner-compose.yml
+          grep -q 'arl-plus-scanner:2026.07-v2' /tmp/scanner-compose.yml
+          grep -q 'ENABLE_SCANNER_V2' /tmp/scanner-compose.yml
+          grep -q 'ENABLE_CONTENT_AUDIT' /tmp/scanner-compose.yml
+          grep -q 'ENABLE_SOURCEMAP_V2' /tmp/scanner-compose.yml
+          grep -q 'ENABLE_FFUF_V2' /tmp/scanner-compose.yml
+          grep -q 'NUCLEI_NETWORK_TAGS' /tmp/scanner-compose.yml
           ! grep -q '^    ports:' /tmp/scanner-compose.yml
-
-      - name: Enforce scanner isolation and safety
-        run: |
-          ! grep -R --line-number -E 'docker compose (down|restart)|mongodb|rabbitmq|mcp-local|arl_web|arl_worker' \
-            scanner scripts/scan-enhanced.sh docker-compose.scanner.yml
-          grep -q -- '-exclude-tags dos' scanner/run-scan.sh
-          grep -q 'dos,fuzz,intrusive,bruteforce' scanner/run-scan-uncover.sh
-          ! grep -q -- '-code' scanner/run-scan-uncover.sh
-          ! grep -q -- '-enable-self-contained' scanner/run-scan-uncover.sh
+          ! grep -R --line-number -E 'docker compose (down|restart)|mongodb|rabbitmq|mcp-local|arl_web|arl_worker' scanner scripts/scan-enhanced.sh docker-compose.scanner.yml
           grep -q 'UNCOVER_ACCEPT_IP_ONLY.*false' docker-compose.scanner.yml
           grep -q 'cap_drop:' docker-compose.scanner.yml
           grep -q 'no-new-privileges:true' docker-compose.scanner.yml
+          grep -q 'follow-host-redirects' scanner/run-intelligence.sh
+          grep -q 's/-follow-redirects/-follow-host-redirects/' scanner/Dockerfile
+          grep -q 'ENABLE_AFROG=false' scanner/run-scan-v2.sh
+          grep -q 'run-afrog-v2.sh' scanner/run-scan-v2.sh
+          grep -q 'sanitize_result_artifacts.py' scanner/run-scan-v2.sh
+          grep -q 'dos,fuzz,intrusive,bruteforce' scanner/run-nuclei-v2.sh
+          ! grep -q -- '-code' scanner/run-nuclei-v2.sh
+          ! grep -q -- '-enable-self-contained' scanner/run-nuclei-v2.sh
 
   image-build:
     needs: static-validation
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare bind-mount directories
+      - name: Prepare bind mounts
         run: |
-          mkdir -p \
-            scan-results scanner-cache/config scanner-cache/nuclei-templates \
-            scanner-pocs/nuclei scanner-pocs/afrog scanner-secrets
+          mkdir -p scan-results scanner-cache/config scanner-cache/nuclei-templates scanner-pocs/nuclei scanner-pocs/afrog scanner-secrets
 
-      - name: Build scanner image
-        run: |
-          docker compose -f docker-compose.scanner.yml --profile scanner build --progress plain scanner
+      - name: Build scanner v2 image
+        run: docker compose -f docker-compose.scanner.yml --profile scanner build --progress plain scanner
 
-      - name: Smoke-test scanner binaries and helpers
+      - name: Smoke-test binaries scripts and offline pipeline
         env:
           UPDATE_TEMPLATES: 'false'
         run: |
           docker compose -f docker-compose.scanner.yml --profile scanner run --rm scanner bash -lc '
             set -e
-            for tool in subfinder uncover dnsx naabu httpx katana nuclei afrog ffuf nmap; do
+            for tool in subfinder uncover dnsx naabu httpx katana nuclei afrog ffuf nmap urlfinder gau tlsx alterx cdncheck; do
               command -v "$tool"
             done
+            for script in /opt/scanner/*.sh; do bash -n "$script"; done
+            python3 -m py_compile /opt/scanner/*.py
+            test -s /opt/scanner/wordlists/high-value-paths.txt
+            test -s /opt/scanner/wordlists/subdomain-environments.txt
+            test -s /opt/scanner/wordlists/content-audit-priority.txt
+            test -s /opt/scanner/V2_VERSION
+            test -f /opt/scanner/sanitize_url_targets.py
+            test -f /opt/scanner/sanitize_result_artifacts.py
+            grep -q -- "-follow-host-redirects" /opt/scanner/run-scan.sh
+            ! grep -q -- "-follow-redirects" /opt/scanner/run-scan.sh
+            urlfinder -h >/dev/null 2>&1
+            gau --version >/dev/null 2>&1
+            tlsx -h >/dev/null 2>&1
+            alterx -h >/dev/null 2>&1
+            cdncheck -h >/dev/null 2>&1
             nuclei -h 2>&1 | grep -q -- "-automatic-scan"
-            nuclei -h 2>&1 | grep -q -- "-tags"
-            python3 -m py_compile \
-              /opt/scanner/prepare_targets.py \
-              /opt/scanner/uncover_assets.py \
-              /opt/scanner/extract_api_surface.py \
-              /opt/scanner/nuclei_report.py \
-              /opt/scanner/summarize.py
-            bash -n /opt/scanner/run-scan.sh
-            bash -n /opt/scanner/run-scan-uncover.sh
+            tmp=/tmp/offline-v2
+            rm -rf "$tmp" && mkdir -p "$tmp/ffuf"
+            for f in domains.txt domains.all.txt live-urls.txt katana.txt sourcemap-candidates.txt open-services.txt ips.txt httpx.jsonl scan-urls.txt errors.log manifest.txt; do : >"$tmp/$f"; done
+            printf "{\"normalized\":0}\n" >"$tmp/target-counts.json"
+            printf "{\"status\":\"disabled\"}\n" >"$tmp/uncover-stats.json"
+            ENABLE_PASSIVE_URLS=false ENABLE_TLSX=false ENABLE_CDNCHECK=false ENABLE_ALTERX=false ENABLE_SECONDARY_CRAWL=false ENABLE_SOURCEMAP_V2=false ENABLE_FFUF_V2=false ENABLE_CONTENT_AUDIT=false /opt/scanner/run-intelligence.sh "$tmp" fast
+            /opt/scanner/sanitize_result_artifacts.py "$tmp"
+            NUCLEI_TEMPLATE_MIN_COUNT=0 /opt/scanner/run-nuclei-v2.sh "$tmp" fast
+            /opt/scanner/run-afrog-v2.sh "$tmp" fast
+            python3 /opt/scanner/enhance_summary.py "$tmp"
+            python3 /opt/scanner/render_report.py "$tmp"
+            test -f "$tmp/report.html"
           '

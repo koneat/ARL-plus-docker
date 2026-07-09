@@ -19,6 +19,11 @@ usage() {
   192.0.2.0/24
   example.com:8443
 
+扫描模式：
+  fast      快速验证，关闭 AlterX 与二次爬取
+  standard  默认，启用历史 URL、TLS SAN、智能排序和内容验证
+  deep      深度，扩大排列、历史 URL、二次爬取和内容验证上限
+
 示例：
   bash scripts/scan-enhanced.sh targets.txt standard
 EOF
@@ -77,12 +82,15 @@ fi
 "${COMPOSE[@]}" run --rm \
   --volume "$TARGET_ABS:/work/input/targets.txt:ro" \
   scanner \
-  /opt/scanner/run-scan-uncover.sh /work/input/targets.txt "$MODE"
+  /opt/scanner/run-scan-v2.sh /work/input/targets.txt "$MODE"
 
 if [[ -L scan-results/latest ]]; then
   latest="$(readlink scan-results/latest)"
   echo "结果目录：$ROOT_DIR/scan-results/$latest"
-  echo "汇总报告：$ROOT_DIR/scan-results/$latest/summary.md"
+  echo "Markdown 汇总：$ROOT_DIR/scan-results/$latest/summary.md"
+  echo "HTML 总报告：$ROOT_DIR/scan-results/$latest/report.html"
+  echo "Nuclei 详情：$ROOT_DIR/scan-results/$latest/nuclei-findings.md"
+  echo "内容审计：$ROOT_DIR/scan-results/$latest/content-findings.md"
 else
   echo "扫描完成，请查看：$ROOT_DIR/scan-results/" >&2
 fi
