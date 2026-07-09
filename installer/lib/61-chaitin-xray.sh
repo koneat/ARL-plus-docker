@@ -72,8 +72,6 @@ install_chaitin_xray() {
       arl-xray
   fi
 
-  # REPORT_ROOT 由 root 创建并保持不可列目录，但必须允许 arl-xray 穿过父目录。
-  # 具体 xray 子目录仍由专用账户独占，报告内容不会因此全局可读。
   install -d -o root -g root -m 0711 "$REPORT_ROOT"
   install -d -o arl-xray -g arl-xray -m 0750 \
     "$REPORT_ROOT/xray" \
