@@ -41,16 +41,10 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          group='arl-xray-ci'
-          user='arl-xray-ci'
-          getent group "$group" >/dev/null 2>&1 || sudo groupadd --system "$group"
-          id "$user" >/dev/null 2>&1 || sudo useradd \
-            --system \
-            --gid "$group" \
-            --home-dir /nonexistent \
-            --shell /usr/sbin/nologin \
-            --no-create-home \
-            "$user"
+          user='nobody'
+          group='nogroup'
+          id "$user" >/dev/null
+          getent group "$group" >/dev/null
 
           root="$(mktemp -d /tmp/arl-reports-ci.XXXXXX)"
           trap 'sudo rm -rf "$root"' EXIT
