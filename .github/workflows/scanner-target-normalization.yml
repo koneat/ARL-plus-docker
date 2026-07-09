@@ -1,0 +1,32 @@
+name: scanner-target-normalization
+
+on:
+  pull_request:
+    paths:
+      - 'scanner/prepare_targets.py'
+      - 'scanner/test_prepare_targets.py'
+      - '.github/workflows/scanner-target-normalization.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'scanner/prepare_targets.py'
+      - 'scanner/test_prepare_targets.py'
+      - '.github/workflows/scanner-target-normalization.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile scanner/prepare_targets.py scanner/test_prepare_targets.py
+      - name: Unit tests
+        run: python -m unittest scanner/test_prepare_targets.py -v
