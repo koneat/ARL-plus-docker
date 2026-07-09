@@ -67,7 +67,8 @@ COPY \
   enhance_summary.py \
   render_report.py \
   /opt/scanner/
-COPY wordlists/high-value-paths.txt /opt/scanner/wordlists/high-value-paths.txt
+COPY wordlists/ /opt/scanner/wordlists/
+COPY V2_VERSION /opt/scanner/V2_VERSION
 
 RUN chmod +x \
       /opt/scanner/entrypoint.sh \
