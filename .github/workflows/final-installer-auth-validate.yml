@@ -1,0 +1,196 @@
+name: final-installer-auth-validate
+
+on:
+  pull_request:
+    paths:
+      - 'install-arl-final.sh'
+      - 'mcp/**'
+      - 'docker-compose.yml'
+      - 'installer/**'
+      - '.github/workflows/final-installer-auth-validate.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'install-arl-final.sh'
+      - 'mcp/**'
+      - 'docker-compose.yml'
+      - 'installer/**'
+      - '.github/workflows/final-installer-auth-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-env-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        run: bash -n install-arl-final.sh
+
+      - name: Reject embedded production secrets
+        run: |
+          ! grep -nE 'mongodb\+srv://[^[:space:]]+:[^[:space:]]+@|vless://[0-9a-fA-F-]{20,}|FOFA_KEY=.+' install-arl-final.sh
+
+      - name: Validate private environment preservation and forced auth topology
+        run: |
+          tmp="$(mktemp -d)"
+          chmod 700 "$tmp"
+          cat >"$tmp/arl-full.env" <<'EOF'
+          ARL_MONGO_URI='mongodb+srv://user:password@example.invalid/arl'
+          ARL_API_KEY='existing-arl-api-key-value-1234567890'
+          MCP_TOKEN='existing-mcp-token-value-12345678901234567890'
+          MCP_EXTERNAL_BIND_IP='127.0.0.1'
+          FOFA_KEY='keep-this-private-value'
+          EOF
+          chmod 600 "$tmp/arl-full.env"
+
+          export ARL_FINAL_INSTALLER_LIBRARY_ONLY=true
+          export ARL_ENV_FILE="$tmp/arl-full.env"
+          export ARL_DIR="$tmp/ARL-plus-docker"
+          # shellcheck disable=SC1091
+          source ./install-arl-final.sh
+
+          prepare_private_env
+
+          test "$(stat -c '%a' "$tmp/arl-full.env")" = '600'
+          test "$(read_env_value "$tmp/arl-full.env" ARL_MONGO_URI)" = 'mongodb+srv://user:password@example.invalid/arl'
+          test "$(read_env_value "$tmp/arl-full.env" ARL_API_KEY)" = 'existing-arl-api-key-value-1234567890'
+          test "$(read_env_value "$tmp/arl-full.env" MCP_TOKEN)" = 'existing-mcp-token-value-12345678901234567890'
+          test "$(read_env_value "$tmp/arl-full.env" FOFA_KEY)" = 'keep-this-private-value'
+          test "$(read_env_value "$tmp/arl-full.env" MCP_LOCAL_BIND_IP)" = '127.0.0.1'
+          test "$(read_env_value "$tmp/arl-full.env" MCP_LOCAL_PORT)" = '5013'
+          test "$(read_env_value "$tmp/arl-full.env" MCP_ALLOW_LOCAL_UNAUTHENTICATED)" = 'true'
+          test "$(read_env_value "$tmp/arl-full.env" MCP_EXTERNAL_PORT)" = '5014'
+          test "$(read_env_value "$tmp/arl-full.env" MCP_READ_ONLY)" = 'false'
+          test "$(read_env_value "$tmp/arl-full.env" ENABLE_WORKER_EXTENSIONS)" = 'true'
+          test "$(grep -c '^MCP_LOCAL_BIND_IP=' "$tmp/arl-full.env")" -eq 1
+          test "$(grep -c '^MCP_EXTERNAL_PORT=' "$tmp/arl-full.env")" -eq 1
+          test -f "$tmp/arl-full.env.bak.${RUN_ID}"
+
+      - name: Validate repository auth invariants through final installer
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/runtime"
+          ln -s "$GITHUB_WORKSPACE" "$tmp/runtime/repo"
+          export ARL_FINAL_INSTALLER_LIBRARY_ONLY=true
+          # shellcheck disable=SC1091
+          source ./install-arl-final.sh
+          TMP_REPO="$tmp/runtime"
+          audit_repository_auth_design
+
+      - name: Enforce final installer safety constraints
+        run: |
+          grep -q "MCP_LOCAL_BIND_IP '127.0.0.1'" install-arl-final.sh
+          grep -q "MCP_ALLOW_LOCAL_UNAUTHENTICATED 'true'" install-arl-final.sh
+          grep -q "MCP_EXTERNAL_PORT '5014'" install-arl-final.sh
+          grep -q 'external_code.*401' install-arl-final.sh
+          grep -q 'wrong_code.*401' install-arl-final.sh
+          grep -q 'secrets.compare_digest' install-arl-final.sh
+          grep -q -- '--check-only' install-arl-final.sh
+          ! grep -nE 'docker compose down|down -v|docker volume rm|MCP_LOCAL_BIND_IP.*0\.0\.0\.0' install-arl-final.sh
+
+  mcp-auth-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build MCP image
+        run: docker build -t arl-mcp-auth-test:ci ./mcp
+
+      - name: Start isolated local and external MCP entries
+        run: |
+          mkdir -p /tmp/arl-mcp-auth-test
+          cat >/tmp/arl-mcp-auth-test/config-docker.yaml <<'EOF'
+          ARL:
+            AUTH: false
+          EOF
+          TOKEN='ci-auth-token-123456789012345678901234567890'
+          docker run -d --rm \
+            --name arl-mcp-local-auth-test \
+            -p 127.0.0.1:15013:5013 \
+            -e MCP_TOKEN="$TOKEN" \
+            -e MCP_READ_ONLY=false \
+            -e MCP_ALLOW_UNAUTHENTICATED=true \
+            -e ARL_CONFIG_PATH=/config/config-docker.yaml \
+            -v /tmp/arl-mcp-auth-test/config-docker.yaml:/config/config-docker.yaml:ro \
+            arl-mcp-auth-test:ci
+          docker run -d --rm \
+            --name arl-mcp-external-auth-test \
+            -p 127.0.0.1:15014:5013 \
+            -e MCP_TOKEN="$TOKEN" \
+            -e MCP_READ_ONLY=false \
+            -e MCP_ALLOW_UNAUTHENTICATED=false \
+            -e ARL_CONFIG_PATH=/config/config-docker.yaml \
+            -v /tmp/arl-mcp-auth-test/config-docker.yaml:/config/config-docker.yaml:ro \
+            arl-mcp-auth-test:ci
+
+      - name: Wait for MCP health endpoints
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:15013/healthz >/dev/null && \
+               curl -fsS http://127.0.0.1:15014/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs arl-mcp-local-auth-test || true
+          docker logs arl-mcp-external-auth-test || true
+          exit 1
+
+      - name: Verify authentication behavior
+        run: |
+          TOKEN='ci-auth-token-123456789012345678901234567890'
+          WRONG='wrong-token-value-123456789012345678901234'
+          code() { curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 10 "$@"; }
+
+          LOCAL_CODE="$(code http://127.0.0.1:15013/mcp)"
+          EXTERNAL_NONE="$(code http://127.0.0.1:15014/mcp)"
+          EXTERNAL_WRONG="$(code -H "Authorization: Bearer ${WRONG}" http://127.0.0.1:15014/mcp)"
+          EXTERNAL_BEARER="$(code -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:15014/mcp)"
+          EXTERNAL_HEADER="$(code -H "X-MCP-Token: ${TOKEN}" http://127.0.0.1:15014/mcp)"
+
+          test "$LOCAL_CODE" != '401'
+          test "$LOCAL_CODE" != '403'
+          test "$EXTERNAL_NONE" = '401'
+          test "$EXTERNAL_WRONG" = '401'
+          test "$EXTERNAL_BEARER" != '401'
+          test "$EXTERNAL_BEARER" != '403'
+          test "$EXTERNAL_HEADER" != '401'
+          test "$EXTERNAL_HEADER" != '403'
+
+          curl -fsS http://127.0.0.1:15013/healthz | jq -e '
+            .status == "ok" and
+            .auth_required == false and
+            ((keys - ["auth_required", "read_only", "service", "status"]) | length == 0)
+          '
+          curl -fsS http://127.0.0.1:15014/healthz | jq -e '
+            .status == "ok" and
+            .auth_required == true and
+            ((keys - ["auth_required", "read_only", "service", "status"]) | length == 0)
+          '
+
+      - name: Verify final installer port inspection helper
+        run: |
+          export ARL_FINAL_INSTALLER_LIBRARY_ONLY=true
+          # shellcheck disable=SC1091
+          source ./install-arl-final.sh
+          test "$(host_bind_ip arl-mcp-local-auth-test 15013)" = '127.0.0.1'
+          test "$(host_bind_ip arl-mcp-external-auth-test 15014)" = '127.0.0.1'
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          docker logs arl-mcp-local-auth-test || true
+          docker logs arl-mcp-external-auth-test || true
+
+      - name: Stop test containers
+        if: always()
+        run: |
+          docker rm -f arl-mcp-local-auth-test arl-mcp-external-auth-test 2>/dev/null || true
