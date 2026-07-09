@@ -140,6 +140,31 @@ jobs:
           grep -q 'build_opener(NoRedirect()' scanner/content_audit.py
           ! grep -q 'from urllib.request import .*urlopen' scanner/content_audit.py
 
+      - name: Test final target and API surface sanitation
+        run: |
+          tmp="$(mktemp -d)"
+          cat >"$tmp/scan-urls.raw.txt" <<'EOF'
+          https://api.example.com/admin?token=top-secret&id=7
+          https://example.com/backup.sql
+          https://api.example.com/admin?id=7&token=duplicate-secret
+          not-a-url
+          EOF
+          python scanner/sanitize_url_targets.py "$tmp/scan-urls.raw.txt" "$tmp/scan-urls.txt" --stats "$tmp/stats.json"
+          sed -n '1p' "$tmp/scan-urls.txt" | grep -qx 'https://api.example.com/admin?id=7&token='
+          sed -n '2p' "$tmp/scan-urls.txt" | grep -qx 'https://example.com/backup.sql'
+          test "$(wc -l <"$tmp/scan-urls.txt")" -eq 2
+          ! grep -Eq 'top-secret|duplicate-secret' "$tmp/scan-urls.txt"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["output"] == 2 and d["invalid"] == 1 and d["redacted_query_values"] == 2' "$tmp/stats.json"
+
+          cat >"$tmp/api-input.txt" <<'EOF'
+          https://api.example.com/v1/users?access_token=archive-secret&id=9
+          wss://api.example.com/socket?token=socket-secret
+          EOF
+          python scanner/extract_api_surface.py "$tmp/api-out" "$tmp/api-input.txt"
+          grep -qx 'https://api.example.com/v1/users?access_token=&id=9' "$tmp/api-out/api-endpoints.txt"
+          grep -qx 'wss://api.example.com/socket?token=' "$tmp/api-out/websocket-endpoints.txt"
+          ! grep -R -Eq 'archive-secret|socket-secret' "$tmp/api-out"
+
       - name: Test Nuclei normalization and HTML report
         run: |
           tmp="$(mktemp -d)"
@@ -187,7 +212,9 @@ jobs:
           grep -q 'cap_drop:' docker-compose.scanner.yml
           grep -q 'no-new-privileges:true' docker-compose.scanner.yml
           grep -q 'follow-host-redirects' scanner/run-intelligence.sh
-          ! grep -q -- '-follow-redirects' scanner/run-intelligence.sh
+          grep -q 's/-follow-redirects/-follow-host-redirects/' scanner/Dockerfile
+          grep -q 'ENABLE_AFROG=false' scanner/run-scan-v2.sh
+          grep -q 'run-afrog-v2.sh' scanner/run-scan-v2.sh
           grep -q 'dos,fuzz,intrusive,bruteforce' scanner/run-nuclei-v2.sh
           ! grep -q -- '-code' scanner/run-nuclei-v2.sh
           ! grep -q -- '-enable-self-contained' scanner/run-nuclei-v2.sh
@@ -222,6 +249,9 @@ jobs:
             test -s /opt/scanner/wordlists/subdomain-environments.txt
             test -s /opt/scanner/wordlists/content-audit-priority.txt
             test -s /opt/scanner/V2_VERSION
+            test -f /opt/scanner/sanitize_url_targets.py
+            grep -q -- "-follow-host-redirects" /opt/scanner/run-scan.sh
+            ! grep -q -- "-follow-redirects" /opt/scanner/run-scan.sh
             urlfinder -h >/dev/null 2>&1
             gau --version >/dev/null 2>&1
             tlsx -h >/dev/null 2>&1
@@ -235,6 +265,7 @@ jobs:
             printf "{\"status\":\"disabled\"}\n" >"$tmp/uncover-stats.json"
             ENABLE_PASSIVE_URLS=false ENABLE_TLSX=false ENABLE_CDNCHECK=false ENABLE_ALTERX=false ENABLE_SECONDARY_CRAWL=false ENABLE_SOURCEMAP_V2=false ENABLE_FFUF_V2=false ENABLE_CONTENT_AUDIT=false /opt/scanner/run-intelligence.sh "$tmp" fast
             NUCLEI_TEMPLATE_MIN_COUNT=0 /opt/scanner/run-nuclei-v2.sh "$tmp" fast
+            /opt/scanner/run-afrog-v2.sh "$tmp" fast
             python3 /opt/scanner/enhance_summary.py "$tmp"
             python3 /opt/scanner/render_report.py "$tmp"
             test -f "$tmp/report.html"
