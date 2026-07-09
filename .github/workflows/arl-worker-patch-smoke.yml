@@ -16,31 +16,46 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Patch and import production ARL task code
+
+      - name: Create production ARL container
         run: |
           set -euo pipefail
           docker pull -q ki9mu/arl-ki9mu:v3.0.1 >/dev/null
-          set +e
-          docker run --rm \
+          docker create --name arl-patch \
             -v "$PWD/enhanced-worker:/patch:ro" \
             -v "$PWD/scanner/wordlists:/wordlists:ro" \
-            ki9mu/arl-ki9mu:v3.0.1 sh -ec '
-              cp /patch/patch_worker.py /tmp/patch_worker.py
-              cp /patch/nuclei_scan.py /tmp/nuclei_scan.py
-              cp /patch/afrog_scan.py /tmp/afrog_scan.py
-              python3.6 /tmp/patch_worker.py \
-                --file-dict /wordlists/high-value-paths.txt \
-                --domain-dict /patch/high-value-subdomains.txt \
-                --nuclei-adapter /tmp/nuclei_scan.py \
-                --afrog-adapter /tmp/afrog_scan.py
-              python3.6 -m py_compile \
-                /code/app/services/afrog_scan.py \
-                /code/app/services/commonTask.py
-              python3.6 -c "from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch; print(\"production-task-hook-ok\")"
-              grep -q "def afrog_scan(self):" /code/app/services/commonTask.py
-              grep -q "self.run_func(\"afrog_scan\", self.afrog_scan)" /code/app/services/commonTask.py
-            ' > /tmp/patch-smoke.log 2>&1
-          rc=$?
-          set -e
-          tail -n 100 /tmp/patch-smoke.log
-          exit "$rc"
+            ki9mu/arl-ki9mu:v3.0.1 sh -c 'sleep 600' >/dev/null
+          docker start arl-patch >/dev/null
+
+      - name: Apply ARL task patch
+        run: |
+          docker exec arl-patch sh -ec '
+            cp /patch/patch_worker.py /tmp/patch_worker.py
+            cp /patch/nuclei_scan.py /tmp/nuclei_scan.py
+            cp /patch/afrog_scan.py /tmp/afrog_scan.py
+            python3.6 /tmp/patch_worker.py \
+              --file-dict /wordlists/high-value-paths.txt \
+              --domain-dict /patch/high-value-subdomains.txt \
+              --nuclei-adapter /tmp/nuclei_scan.py \
+              --afrog-adapter /tmp/afrog_scan.py
+          '
+
+      - name: Compile patched Python 3.6 sources
+        run: |
+          docker exec arl-patch python3.6 -m py_compile \
+            /code/app/services/afrog_scan.py \
+            /code/app/services/commonTask.py
+
+      - name: Import patched ARL task classes
+        run: |
+          docker exec arl-patch python3.6 -c \
+            'from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch; print("production-task-hook-ok")'
+
+      - name: Verify task hook markers
+        run: |
+          docker exec arl-patch grep -q 'def afrog_scan(self):' /code/app/services/commonTask.py
+          docker exec arl-patch grep -q 'self.run_func("afrog_scan", self.afrog_scan)' /code/app/services/commonTask.py
+
+      - name: Remove test container
+        if: always()
+        run: docker rm -f arl-patch >/dev/null 2>&1 || true
