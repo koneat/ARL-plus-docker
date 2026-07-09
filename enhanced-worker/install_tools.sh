@@ -199,11 +199,12 @@ python3.6 /tmp/patch_arl.py
 log '安装仓库内置字典并合并 API/文件路径'
 install_vendored_wordlists
 
-log '合并高价值路径/子域名字典并替换 Nuclei 适配器'
+log '合并高价值路径/子域名字典并安装 Nuclei、Afrog/xray 任务适配器'
 python3.6 /tmp/patch_worker.py \
   --file-dict "$VENDORED_FILE_DICT" \
   --domain-dict "$VENDORED_DOMAIN_DICT" \
-  --nuclei-adapter /tmp/nuclei_scan.py
+  --nuclei-adapter /tmp/nuclei_scan.py \
+  --afrog-adapter /tmp/afrog_scan.py
 
 install -m 0755 /tmp/afrog-arl /usr/local/bin/afrog-arl
 install -m 0755 /tmp/arl-report-index /usr/local/bin/arl-report-index
@@ -212,8 +213,10 @@ python3.6 -m py_compile \
   /code/app/services/massdns.py \
   /code/app/services/wildcardSmart.py \
   /code/app/services/nuclei_scan.py \
+  /code/app/services/afrog_scan.py \
+  /code/app/services/commonTask.py \
   /code/app/tasks/domain.py
-python3.6 -c 'import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan; print("enhanced-worker-import-ok")'
+python3.6 -c 'import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan; from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch; print("enhanced-worker-import-ok")'
 command -v nuclei >/dev/null
 command -v afrog >/dev/null
 command -v rad >/dev/null
@@ -226,6 +229,8 @@ grep -qx 'index.php' /opt/arl-wordlists/raft-small-files.txt
 grep -qx 'admin' /opt/arl-wordlists/subdomains-main.txt
 grep -qx 'api/auth/login' /code/app/dicts/file_top_2000.txt
 grep -qx 'index.php' /code/app/dicts/file_top_2000.txt
+grep -q 'def afrog_scan(self):' /code/app/services/commonTask.py
+grep -q 'self.run_func("afrog_scan", self.afrog_scan)' /code/app/services/commonTask.py
 if [[ "$INSTALL_CHROMIUM" == 'true' ]]; then
   command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1
 fi
@@ -234,6 +239,7 @@ rm -f \
   /tmp/patch_arl.py \
   /tmp/patch_worker.py \
   /tmp/nuclei_scan.py \
+  /tmp/afrog_scan.py \
   /tmp/high-value-paths.txt \
   /tmp/high-value-subdomains.txt \
   /tmp/vendor-api-endpoints.txt \
@@ -246,4 +252,4 @@ rm -f \
   /tmp/afrog-arl \
   /tmp/arl-report-index
 
-log '持久化 Worker 扩展安装完成'
+log '持久化 Worker 扩展安装完成；Afrog/xray 任务钩子已通过镜像内导入检查'

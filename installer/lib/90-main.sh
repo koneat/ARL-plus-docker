@@ -56,14 +56,15 @@ main() {
   deploy_services
   verify_services
 
-  # 先取得容器网络和代理健康状态，再构建 Worker，保证 Afrog 代理参数可靠。
+  # 先取得容器网络并启动两个代理，再切换自动扫描 Worker。
+  # 这样 Worker 第一次接单时，长亭 xray 已经真实可用，不会出现“工具已装但未参与”。
   detect_docker_gateway
   install_xray_core
+  install_chaitin_xray
   install_worker_variant
 
   # Worker 已带持久化 PySocks 后，再写入 ARL 代理并切换 Web/Scheduler 运行时。
   set_arl_http_proxy
-  install_chaitin_xray
   prepare_scanner_stack
   verify_full_stack
 }

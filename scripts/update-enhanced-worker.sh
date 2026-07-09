@@ -45,6 +45,7 @@ command -v python3 >/dev/null 2>&1 || fail "未找到 python3"
 [[ -f docker-compose.yml ]] || fail "缺少 docker-compose.yml"
 [[ -f docker-compose.enhanced-worker.yml ]] || fail "缺少 docker-compose.enhanced-worker.yml"
 [[ -f enhanced-worker/Dockerfile ]] || fail "缺少 enhanced-worker/Dockerfile"
+[[ -f enhanced-worker/afrog_scan.py ]] || fail "缺少 enhanced-worker/afrog_scan.py"
 [[ -f "$ENV_TOOL" ]] || fail "缺少 scripts/compose-env.py"
 for wordlist in \
   wordlists/vendor/api-endpoints.txt \
@@ -152,8 +153,10 @@ docker run --rm --entrypoint sh "$ENHANCED_IMAGE" -c '
     /code/app/services/massdns.py \
     /code/app/services/wildcardSmart.py \
     /code/app/services/nuclei_scan.py \
+    /code/app/services/afrog_scan.py \
+    /code/app/services/commonTask.py \
     /code/app/tasks/domain.py
-  python3.6 -c "import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan; print(\"enhanced-worker-import-ok\")"
+  python3.6 -c "import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan; from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch; print(\"enhanced-worker-import-ok\")"
   command -v nuclei
   command -v afrog
   command -v rad
@@ -170,6 +173,10 @@ docker run --rm --entrypoint sh "$ENHANCED_IMAGE" -c '
   grep -qx "api/auth/login" /code/app/dicts/file_top_2000.txt
   grep -qx "admin" /code/app/dicts/domain_2w.txt
   grep -q "ARL_NUCLEI_TAGS" /code/app/services/nuclei_scan.py
+  grep -q "executed_zero_findings" /code/app/services/afrog_scan.py
+  grep -q "def afrog_scan(self):" /code/app/services/commonTask.py
+  grep -q "self.run_func(\"afrog_scan\", self.afrog_scan)" /code/app/services/commonTask.py
+  grep -q "update_services" /code/app/services/commonTask.py
   grep -q "WildcardSmartFilter" /code/app/tasks/domain.py
   ! grep -q "if ip in self.not_found_domain_ips" /code/app/tasks/domain.py
 '
@@ -184,15 +191,15 @@ ARL_ENHANCED_WORKER_IMAGE="$ENHANCED_IMAGE" \
 ARL_MERGE_FULL_DOMAIN_WORDLIST="$MERGE_FULL_DOMAIN" \
   "${COMPOSE[@]}" up -d --no-deps --force-recreate worker
 
-log "检查 Worker 进程、工具、字典和补丁加载状态"
+log "检查 Worker 进程、工具、字典和任务补丁加载状态"
 healthy=false
 for _ in $(seq 1 40); do
   state="$(docker inspect -f '{{.State.Status}}' "$WORKER_CONTAINER" 2>/dev/null || true)"
   if [[ "$state" == "running" ]] && \
      docker exec "$WORKER_CONTAINER" sh -c \
-       "python3.6 -c 'import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan; import app.tasks.domain'" >/dev/null 2>&1 && \
+       "python3.6 -c 'import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan; from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch; import app.tasks.domain'" >/dev/null 2>&1 && \
      docker exec "$WORKER_CONTAINER" sh -c \
-       "command -v nuclei && command -v afrog && command -v rad && test -e /usr/lib64/libpcap.so.0.8 && test -s /opt/arl-wordlists/subdomains-main.txt && grep -qx 'api/auth/login' /code/app/dicts/file_top_2000.txt" >/dev/null 2>&1 && \
+       "command -v nuclei && command -v afrog && command -v rad && test -e /usr/lib64/libpcap.so.0.8 && test -s /opt/arl-wordlists/subdomains-main.txt && grep -qx 'api/auth/login' /code/app/dicts/file_top_2000.txt && grep -q 'def afrog_scan(self):' /code/app/services/commonTask.py" >/dev/null 2>&1 && \
      docker exec "$WORKER_CONTAINER" sh -c \
        "ps -ef | grep -v grep | grep -q 'celery -A app.celerytask.celery worker'"; then
     healthy=true
@@ -216,6 +223,8 @@ UPDATE_SUCCEEDED=true
 trap - EXIT
 log "更新完成：${WORKER_CONTAINER} 已切换到 ${ENHANCED_IMAGE}"
 log "镜像选择已持久化到 ${ENV_FILE} 的 ARL_WORKER_IMAGE"
+log "ARL 站点任务已挂载自动 Afrog；Afrog 通过 ARL_XRAY_PROXY_URL 进入长亭 xray"
+log "状态报告：${ARL_REPORT_ROOT:-/var/lib/arl-reports}/afrog/*.status.json"
 log "仓库内置字典已写入镜像 /opt/arl-wordlists"
 log "回滚状态文件：${STATE_FILE}"
 log "手工回滚命令：bash scripts/rollback-enhanced-worker.sh"

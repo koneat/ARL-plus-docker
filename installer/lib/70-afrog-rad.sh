@@ -1,5 +1,18 @@
 # shellcheck shell=bash
 
+# 自动扫描仅在增强 Worker 启用时默认开启；显式配置始终优先。
+ARL_AUTO_AFROG_SCAN="${ARL_AUTO_AFROG_SCAN:-${ENABLE_WORKER_EXTENSIONS:-false}}"
+ARL_REQUIRE_XRAY_PROXY="${ARL_REQUIRE_XRAY_PROXY:-true}"
+ARL_AFROG_SEVERITY="${ARL_AFROG_SEVERITY:-info,low,medium,high,critical}"
+ARL_AFROG_RATE_LIMIT="${ARL_AFROG_RATE_LIMIT:-100}"
+ARL_AFROG_CONCURRENCY="${ARL_AFROG_CONCURRENCY:-20}"
+ARL_AFROG_TIMEOUT="${ARL_AFROG_TIMEOUT:-20}"
+ARL_AFROG_MAX_TARGETS="${ARL_AFROG_MAX_TARGETS:-3000}"
+ARL_XRAY_PROXY_URL="${ARL_XRAY_PROXY_URL:-}"
+export ARL_AUTO_AFROG_SCAN ARL_REQUIRE_XRAY_PROXY ARL_AFROG_SEVERITY
+export ARL_AFROG_RATE_LIMIT ARL_AFROG_CONCURRENCY ARL_AFROG_TIMEOUT
+export ARL_AFROG_MAX_TARGETS ARL_XRAY_PROXY_URL
+
 compose_env_set() {
   local key="$1"
   local value="$2"
@@ -27,7 +40,36 @@ prepare_worker_runtime_env() {
   compose_env_set ARL_NUCLEI_EXCLUDE_TAGS "$ARL_NUCLEI_EXCLUDE_TAGS"
   compose_env_set ARL_NUCLEI_RATE_LIMIT "$ARL_NUCLEI_RATE_LIMIT"
 
-  if [[ "$ENABLE_VLESS_PROXY" == "true" && "${XRAY_PROXY_HEALTHY:-false}" == "true" ]]; then
+  compose_env_set ARL_AUTO_AFROG_SCAN "$ARL_AUTO_AFROG_SCAN"
+  compose_env_set ARL_REQUIRE_XRAY_PROXY "$ARL_REQUIRE_XRAY_PROXY"
+  compose_env_set ARL_AFROG_SEVERITY "$ARL_AFROG_SEVERITY"
+  compose_env_set ARL_AFROG_RATE_LIMIT "$ARL_AFROG_RATE_LIMIT"
+  compose_env_set ARL_AFROG_CONCURRENCY "$ARL_AFROG_CONCURRENCY"
+  compose_env_set ARL_AFROG_TIMEOUT "$ARL_AFROG_TIMEOUT"
+  compose_env_set ARL_AFROG_MAX_TARGETS "$ARL_AFROG_MAX_TARGETS"
+
+  # 长亭 xray 是漏洞扫描代理。Afrog 必须通过它发起请求，二者才算真正参与任务。
+  if [[ "$ENABLE_CHAITIN_XRAY" == "true" ]]; then
+    ARL_XRAY_PROXY_URL="http://${DOCKER_GATEWAY}:${CHAITIN_XRAY_PORT}"
+    AFROG_PROXY_URL="$ARL_XRAY_PROXY_URL"
+    export ARL_XRAY_PROXY_URL AFROG_PROXY_URL
+    compose_env_set ARL_XRAY_PROXY_URL "$ARL_XRAY_PROXY_URL"
+    compose_env_set AFROG_PROXY_URL "$AFROG_PROXY_URL"
+    ok "ARL 自动 Afrog 将通过长亭 xray Webscan：$ARL_XRAY_PROXY_URL"
+    return 0
+  fi
+
+  ARL_XRAY_PROXY_URL=''
+  export ARL_XRAY_PROXY_URL
+  compose_env_unset ARL_XRAY_PROXY_URL
+
+  # 未启用长亭 xray 时，只允许在显式关闭强制联动后使用 VLESS 或直连。
+  if [[ "$ARL_REQUIRE_XRAY_PROXY" == "true" ]]; then
+    AFROG_PROXY_URL=''
+    export AFROG_PROXY_URL
+    compose_env_unset AFROG_PROXY_URL
+    warn "ARL_REQUIRE_XRAY_PROXY=true 但长亭 xray 未启用；Afrog 任务会明确记录 skipped_xray_unavailable，不会伪装成零漏洞"
+  elif [[ "$ENABLE_VLESS_PROXY" == "true" && "${XRAY_PROXY_HEALTHY:-false}" == "true" ]]; then
     AFROG_PROXY_URL="socks5://${DOCKER_GATEWAY}:${XRAY_SOCKS_PORT}"
     export AFROG_PROXY_URL
     compose_env_set AFROG_PROXY_URL "$AFROG_PROXY_URL"
@@ -43,6 +85,13 @@ prepare_worker_runtime_env() {
 }
 
 install_worker_variant() {
+  if [[ "$ARL_AUTO_AFROG_SCAN" == "true" && "$ENABLE_WORKER_EXTENSIONS" != "true" ]]; then
+    die "ARL_AUTO_AFROG_SCAN=true 时必须启用 ENABLE_WORKER_EXTENSIONS"
+  fi
+  if [[ "$ARL_AUTO_AFROG_SCAN" == "true" && "$ARL_REQUIRE_XRAY_PROXY" == "true" && "$ENABLE_CHAITIN_XRAY" != "true" ]]; then
+    die "自动 Afrog 强制联动 xray 时必须启用 ENABLE_CHAITIN_XRAY"
+  fi
+
   prepare_worker_runtime_env
 
   if [[ "$ENABLE_WORKER_EXTENSIONS" == "true" ]]; then
@@ -53,7 +102,7 @@ install_worker_variant() {
       "$updater" \
       "${ARL_DIR}/scripts/rollback-enhanced-worker.sh" \
       "${ARL_DIR}/scripts/compose-env.py"
-    log "构建并切换持久化增强 Worker：智能泛解析、Nuclei、Afrog、RAD、Chromium、libpcap、PySocks 与高价值字典"
+    log "构建并切换持久化增强 Worker：智能泛解析、Nuclei、自动 Afrog+xray、RAD、Chromium、libpcap、PySocks 与高价值字典"
     (
       cd "$ARL_DIR"
       ARL_BASE_IMAGE="$ARL_BASE_IMAGE" \
@@ -63,7 +112,7 @@ install_worker_variant() {
       INSTALL_CHROMIUM="$INSTALL_CHROMIUM" \
       bash "$updater"
     )
-    ok "持久化增强 Worker 已启用；容器重建后工具不会丢失"
+    ok "持久化增强 Worker 已启用；ARL 任务会自动执行 Afrog，并通过长亭 xray Webscan"
     return 0
   fi
 
