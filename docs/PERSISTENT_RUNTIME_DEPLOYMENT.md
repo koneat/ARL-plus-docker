@@ -1,0 +1,1 @@
+Deployment is orchestrated by `installer/arl-full-deploy.sh`. Set `ENABLE_WORKER_EXTENSIONS=true` to build and switch to the persistent enhanced Worker. Set `ENABLE_ARL_HTTP_PROXY=true` with a healthy VLESS runtime to build and switch Web/Scheduler to the persistent PySocks image.
