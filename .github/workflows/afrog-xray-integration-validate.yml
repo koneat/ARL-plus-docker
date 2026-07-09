@@ -7,6 +7,7 @@ on:
     paths:
       - 'enhanced-worker/**'
       - 'docker-compose.enhanced-worker.yml'
+      - 'docker-compose.yml'
       - 'installer/lib/70-afrog-rad.sh'
       - 'installer/lib/90-main.sh'
       - 'scripts/update-enhanced-worker.sh'
@@ -30,6 +31,7 @@ jobs:
           bash -n installer/lib/90-main.sh
           bash -n scripts/update-enhanced-worker.sh
           grep -q 'ARL_XRAY_PROXY_URL' docker-compose.enhanced-worker.yml
+          grep -q 'ARL_XRAY_PROXY_URL' docker-compose.yml
           grep -q 'executed_zero_findings' enhanced-worker/afrog_scan.py
           grep -q 'self.run_func("afrog_scan", self.afrog_scan)' enhanced-worker/patch_worker.py
           grep -q 'utils.conn_db("vuln").insert_one(item)' enhanced-worker/patch_worker.py
@@ -62,8 +64,7 @@ jobs:
           spec.loader.exec_module(module)
 
           fake = root / 'afrog'
-          fake.write_text(textwrap.dedent(r'''\
-          #!/usr/bin/env python3
+          fake.write_text(textwrap.dedent('''#!/usr/bin/env python3
           import json, os, sys
           from pathlib import Path
           if '-h' in sys.argv:
