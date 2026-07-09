@@ -1,0 +1,95 @@
+name: full-installer-validate
+
+on:
+  pull_request:
+    paths:
+      - 'installer/**'
+      - '.github/workflows/full-installer-validate.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'installer/**'
+      - '.github/workflows/full-installer-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        run: |
+          bash -n installer/arl-full-deploy.sh
+          for file in installer/lib/*.sh; do bash -n "$file"; done
+
+      - name: Reject embedded production secrets
+        run: |
+          ! grep -R --line-number -E \
+            'mongodb\+srv://[^[:space:]]+:[^[:space:]]+@|vless://[0-9a-fA-F-]{20,}|(FOFA_KEY|HUNTER_API_KEY|QUAKE_TOKEN|ZOOMEYE_API_KEY|SHODAN_API_KEY)=["'"'][A-Za-z0-9_-]{16,}' \
+            installer
+
+      - name: Validate safe defaults
+        run: |
+          grep -q 'MCP_EXTERNAL_BIND_IP="${MCP_EXTERNAL_BIND_IP:-127.0.0.1}"' installer/arl-full-deploy.sh
+          grep -q 'MCP_READ_ONLY="${MCP_READ_ONLY:-true}"' installer/arl-full-deploy.sh
+          grep -q 'DISABLE_UFW="${DISABLE_UFW:-false}"' installer/arl-full-deploy.sh
+          ! grep -q 'cat > /root/install-arl-full.sh' installer/arl-full-deploy.sh
+
+      - name: Check no-feature configuration
+        run: |
+          cat >/tmp/arl.env <<'ENV'
+          DISABLE_UFW=false
+          ENABLE_VLESS_PROXY=false
+          ENABLE_ARL_HTTP_PROXY=false
+          ENABLE_CHAITIN_XRAY=false
+          ENABLE_SMART_WILDCARD=true
+          ENABLE_SCANNER_STACK=true
+          BUILD_SCANNER_IMAGE=false
+          ENABLE_WORKER_EXTENSIONS=false
+          MCP_LOCAL_BIND_IP=127.0.0.1
+          MCP_EXTERNAL_BIND_IP=127.0.0.1
+          MCP_LOCAL_PORT=5013
+          MCP_EXTERNAL_PORT=5014
+          ENV
+          bash installer/arl-full-deploy.sh --env-file /tmp/arl.env --check-only
+
+      - name: Check VLESS parser
+        run: |
+          cat >/tmp/vless-nodes.txt <<'NODES'
+          vless://11111111-1111-4111-8111-111111111111@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2Fws#ci
+          NODES
+          cat >/tmp/arl-vless.env <<'ENV'
+          ENABLE_VLESS_PROXY=true
+          ENABLE_ARL_HTTP_PROXY=true
+          ENABLE_CHAITIN_XRAY=false
+          ENABLE_WORKER_EXTENSIONS=false
+          VLESS_NODES_FILE=/tmp/vless-nodes.txt
+          MCP_LOCAL_BIND_IP=127.0.0.1
+          MCP_EXTERNAL_BIND_IP=127.0.0.1
+          MCP_LOCAL_PORT=5013
+          MCP_EXTERNAL_PORT=5014
+          ENV
+          bash installer/arl-full-deploy.sh --env-file /tmp/arl-vless.env --check-only
+
+      - name: Reject public no-auth MCP binding
+        run: |
+          cat >/tmp/arl-bad.env <<'ENV'
+          ENABLE_VLESS_PROXY=false
+          ENABLE_ARL_HTTP_PROXY=false
+          ENABLE_CHAITIN_XRAY=false
+          ENABLE_WORKER_EXTENSIONS=false
+          MCP_LOCAL_BIND_IP=0.0.0.0
+          MCP_LOCAL_PORT=5013
+          MCP_EXTERNAL_PORT=5014
+          ENV
+          if bash installer/arl-full-deploy.sh --env-file /tmp/arl-bad.env --check-only; then
+            echo 'public no-auth binding was incorrectly accepted' >&2
+            exit 1
+          fi
