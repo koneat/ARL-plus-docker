@@ -66,8 +66,6 @@ status = read_kv(out / "nuclei-template-status.txt")
 template_count = int(status.get("template_count", "0") or 0)
 minimum_expected = int(status.get("minimum_expected", "0") or 0)
 templates_required_missing = minimum_expected > 0 and template_count < minimum_expected
-errors = read_errors(out / "errors.log")
-error_names = {str(item.get("name", "")) for item in errors}
 
 passes = {
     "official": (out / "scan-urls.txt", out / "nuclei.official.jsonl", "Nuclei 官方模板全量扫描"),
@@ -78,6 +76,12 @@ passes = {
     "network": (out / "open-services.txt", out / "nuclei.network.jsonl", "Nuclei 网络服务与 TLS 专项"),
     "dns": (out / "domains.all.txt", out / "nuclei.dns.jsonl", "Nuclei DNS 与接管风险专项"),
 }
+nuclei_stage_names = {display_name for _, _, display_name in passes.values()}
+errors = [
+    item for item in read_errors(out / "errors.log")
+    if str(item.get("name", "")) in nuclei_stage_names
+]
+error_names = {str(item.get("name", "")) for item in errors}
 
 pass_status: dict[str, dict[str, object]] = {}
 for name, (targets, output, display_name) in passes.items():
