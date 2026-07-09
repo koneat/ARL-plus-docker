@@ -1,5 +1,18 @@
 # shellcheck shell=bash
 
+# 自动扫描仅在增强 Worker 启用时默认开启；显式配置始终优先。
+ARL_AUTO_AFROG_SCAN="${ARL_AUTO_AFROG_SCAN:-${ENABLE_WORKER_EXTENSIONS:-false}}"
+ARL_REQUIRE_XRAY_PROXY="${ARL_REQUIRE_XRAY_PROXY:-true}"
+ARL_AFROG_SEVERITY="${ARL_AFROG_SEVERITY:-info,low,medium,high,critical}"
+ARL_AFROG_RATE_LIMIT="${ARL_AFROG_RATE_LIMIT:-100}"
+ARL_AFROG_CONCURRENCY="${ARL_AFROG_CONCURRENCY:-20}"
+ARL_AFROG_TIMEOUT="${ARL_AFROG_TIMEOUT:-20}"
+ARL_AFROG_MAX_TARGETS="${ARL_AFROG_MAX_TARGETS:-3000}"
+ARL_XRAY_PROXY_URL="${ARL_XRAY_PROXY_URL:-}"
+export ARL_AUTO_AFROG_SCAN ARL_REQUIRE_XRAY_PROXY ARL_AFROG_SEVERITY
+export ARL_AFROG_RATE_LIMIT ARL_AFROG_CONCURRENCY ARL_AFROG_TIMEOUT
+export ARL_AFROG_MAX_TARGETS ARL_XRAY_PROXY_URL
+
 compose_env_set() {
   local key="$1"
   local value="$2"
@@ -72,6 +85,13 @@ prepare_worker_runtime_env() {
 }
 
 install_worker_variant() {
+  if [[ "$ARL_AUTO_AFROG_SCAN" == "true" && "$ENABLE_WORKER_EXTENSIONS" != "true" ]]; then
+    die "ARL_AUTO_AFROG_SCAN=true 时必须启用 ENABLE_WORKER_EXTENSIONS"
+  fi
+  if [[ "$ARL_AUTO_AFROG_SCAN" == "true" && "$ARL_REQUIRE_XRAY_PROXY" == "true" && "$ENABLE_CHAITIN_XRAY" != "true" ]]; then
+    die "自动 Afrog 强制联动 xray 时必须启用 ENABLE_CHAITIN_XRAY"
+  fi
+
   prepare_worker_runtime_env
 
   if [[ "$ENABLE_WORKER_EXTENSIONS" == "true" ]]; then
@@ -94,10 +114,6 @@ install_worker_variant() {
     )
     ok "持久化增强 Worker 已启用；ARL 任务会自动执行 Afrog，并通过长亭 xray Webscan"
     return 0
-  fi
-
-  if [[ "$ARL_AUTO_AFROG_SCAN" == "true" ]]; then
-    die "ARL_AUTO_AFROG_SCAN=true 时必须启用 ENABLE_WORKER_EXTENSIONS"
   fi
 
   if [[ "$ENABLE_SMART_WILDCARD" == "true" ]]; then
