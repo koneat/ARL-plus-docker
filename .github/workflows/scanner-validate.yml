@@ -140,7 +140,7 @@ jobs:
           grep -q 'build_opener(NoRedirect()' scanner/content_audit.py
           ! grep -q 'from urllib.request import .*urlopen' scanner/content_audit.py
 
-      - name: Test final target and API surface sanitation
+      - name: Test final target API surface and artifact sanitation
         run: |
           tmp="$(mktemp -d)"
           cat >"$tmp/scan-urls.raw.txt" <<'EOF'
@@ -164,6 +164,25 @@ jobs:
           grep -qx 'https://api.example.com/v1/users?access_token=&id=9' "$tmp/api-out/api-endpoints.txt"
           grep -qx 'wss://api.example.com/socket?token=' "$tmp/api-out/websocket-endpoints.txt"
           ! grep -R -Eq 'archive-secret|socket-secret' "$tmp/api-out"
+
+          mkdir -p "$tmp/artifacts"
+          cat >"$tmp/artifacts/gau.txt" <<'EOF'
+          https://api.example.com/old?token=gau-secret&id=1
+          EOF
+          cat >"$tmp/artifacts/katana.txt" <<'EOF'
+          https://www.example.com/api?password=katana-secret&page=2
+          EOF
+          cat >"$tmp/artifacts/urlfinder.jsonl" <<'EOF'
+          {"url":"https://api.example.com/reset?signature=urlfinder-secret&id=3","input":"example.com","source":"archive"}
+          EOF
+          cat >"$tmp/artifacts/httpx.jsonl" <<'EOF'
+          {"url":"https://example.com/login?access_token=httpx-secret","location":"/next?token=redirect-secret"}
+          EOF
+          python scanner/sanitize_result_artifacts.py "$tmp/artifacts"
+          ! grep -R -Eq 'gau-secret|katana-secret|urlfinder-secret|httpx-secret|redirect-secret' "$tmp/artifacts"
+          grep -qx 'https://api.example.com/old?id=1&token=' "$tmp/artifacts/gau.txt"
+          grep -q 'signature=' "$tmp/artifacts/urlfinder.jsonl"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["total_changed"] >= 5' "$tmp/artifacts/artifact-sanitize-stats.json"
 
       - name: Test Nuclei normalization and HTML report
         run: |
@@ -215,6 +234,7 @@ jobs:
           grep -q 's/-follow-redirects/-follow-host-redirects/' scanner/Dockerfile
           grep -q 'ENABLE_AFROG=false' scanner/run-scan-v2.sh
           grep -q 'run-afrog-v2.sh' scanner/run-scan-v2.sh
+          grep -q 'sanitize_result_artifacts.py' scanner/run-scan-v2.sh
           grep -q 'dos,fuzz,intrusive,bruteforce' scanner/run-nuclei-v2.sh
           ! grep -q -- '-code' scanner/run-nuclei-v2.sh
           ! grep -q -- '-enable-self-contained' scanner/run-nuclei-v2.sh
@@ -250,6 +270,7 @@ jobs:
             test -s /opt/scanner/wordlists/content-audit-priority.txt
             test -s /opt/scanner/V2_VERSION
             test -f /opt/scanner/sanitize_url_targets.py
+            test -f /opt/scanner/sanitize_result_artifacts.py
             grep -q -- "-follow-host-redirects" /opt/scanner/run-scan.sh
             ! grep -q -- "-follow-redirects" /opt/scanner/run-scan.sh
             urlfinder -h >/dev/null 2>&1
@@ -264,6 +285,7 @@ jobs:
             printf "{\"normalized\":0}\n" >"$tmp/target-counts.json"
             printf "{\"status\":\"disabled\"}\n" >"$tmp/uncover-stats.json"
             ENABLE_PASSIVE_URLS=false ENABLE_TLSX=false ENABLE_CDNCHECK=false ENABLE_ALTERX=false ENABLE_SECONDARY_CRAWL=false ENABLE_SOURCEMAP_V2=false ENABLE_FFUF_V2=false ENABLE_CONTENT_AUDIT=false /opt/scanner/run-intelligence.sh "$tmp" fast
+            /opt/scanner/sanitize_result_artifacts.py "$tmp"
             NUCLEI_TEMPLATE_MIN_COUNT=0 /opt/scanner/run-nuclei-v2.sh "$tmp" fast
             /opt/scanner/run-afrog-v2.sh "$tmp" fast
             python3 /opt/scanner/enhance_summary.py "$tmp"
