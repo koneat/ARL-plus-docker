@@ -1,0 +1,85 @@
+name: unified-report-index-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'enhanced-worker/arl-report-index'
+      - 'enhanced-worker/afrog_scan.py'
+      - '.github/workflows/unified-report-index-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Python syntax
+        run: python -m py_compile enhanced-worker/arl-report-index
+
+      - name: Generate unified report fixture
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          export ARL_REPORT_ROOT="$root"
+          mkdir -p "$root/afrog" "$root/xray/history"
+
+          cat >"$root/afrog/afrog-task-demo.status.json" <<'JSON'
+          {
+            "task_id": "task-demo",
+            "status": "executed_findings",
+            "target_count": 1,
+            "findings_count": 1,
+            "ended_at": "2026-07-09T08:00:00Z",
+            "xray": {"status": "executed_via_proxy"}
+          }
+          JSON
+
+          cat >"$root/afrog/afrog-task-demo.json" <<'JSON'
+          [
+            {
+              "isvul": true,
+              "target": "https://example.test",
+              "fulltarget": "https://example.test/admin",
+              "pocinfo": {
+                "id": "demo-admin-exposure",
+                "infoname": "Demo Admin Exposure",
+                "infoseg": "high"
+              },
+              "request": "GET /admin HTTP/1.1",
+              "response": "HTTP/1.1 200 OK"
+            }
+          ]
+          JSON
+
+          printf '<html>Afrog full report</html>\n' >"$root/afrog/afrog-task-demo.html"
+          ln -s afrog-task-demo.html "$root/afrog/latest.html"
+          printf '<html>Xray current vulnerability report</html>\n' >"$root/xray/proxy.html"
+          printf '<html>Xray historical vulnerability report</html>\n' >"$root/xray/history/proxy-20260709.html"
+
+          python enhanced-worker/arl-report-index
+          printf '%s\n' "$root" > /tmp/report-root
+
+      - name: Verify one index and clickable vulnerability details
+        run: |
+          set -euo pipefail
+          root="$(cat /tmp/report-root)"
+          test -s "$root/index.html"
+          grep -q 'ARL Xray / Afrog 统一漏洞索引' "$root/index.html"
+          grep -q 'Demo Admin Exposure' "$root/index.html"
+          grep -q '打开 Xray 具体漏洞报告' "$root/index.html"
+          grep -q 'xray/proxy.html' "$root/index.html"
+          grep -q 'afrog/details/afrog-task-demo-0001.html' "$root/index.html"
+
+          detail="$root/afrog/details/afrog-task-demo-0001.html"
+          test -s "$detail"
+          grep -q 'Demo Admin Exposure' "$detail"
+          grep -q 'GET /admin HTTP/1.1' "$detail"
+          grep -q 'HTTP/1.1 200 OK' "$detail"
+          grep -q 'demo-admin-exposure' "$detail"
+
+          grep -q '../index.html#afrog-details' "$root/afrog/index.html"
