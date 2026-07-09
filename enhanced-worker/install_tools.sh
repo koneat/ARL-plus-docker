@@ -6,6 +6,8 @@ RAD_VERSION="${RAD_VERSION:-1.0}"
 INSTALL_CHROMIUM="${INSTALL_CHROMIUM:-true}"
 ARL_MERGE_FULL_DOMAIN_WORDLIST="${ARL_MERGE_FULL_DOMAIN_WORDLIST:-false}"
 WORK_DIR="$(mktemp -d)"
+VENDORED_FILE_DICT=''
+VENDORED_DOMAIN_DICT=''
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 log() {
@@ -16,8 +18,6 @@ fetch() {
   local url="$1"
   local output="$2"
   if command -v curl >/dev/null 2>&1; then
-    # ARL v3.0.1 基础镜像可能仍使用 CentOS 7 的旧 curl，
-    # 不使用 --retry-all-errors 等新版本参数。
     curl -fL --retry 5 --retry-delay 2 --connect-timeout 20 --max-time 1200 \
       -A 'arl-enhanced-worker-builder/2026.07' \
       "$url" -o "$output"
@@ -148,14 +148,16 @@ install_rad() {
 
 install_vendored_wordlists() {
   local target='/opt/arl-wordlists'
-  local combined_files='/tmp/combined-file-dict.txt'
-  local combined_domains='/tmp/combined-domain-dict.txt'
+
+  VENDORED_FILE_DICT='/tmp/combined-file-dict.txt'
+  VENDORED_DOMAIN_DICT='/tmp/combined-domain-dict.txt'
 
   for path in \
     /tmp/vendor-api-endpoints.txt \
     /tmp/vendor-raft-small-files.txt \
     /tmp/vendor-subdomains-main.txt \
-    /tmp/vendor-SOURCES.env; do
+    /tmp/vendor-SOURCES.env \
+    /tmp/vendor-LICENSE.SecLists; do
     [[ -s "$path" ]] || {
       echo "[ERROR] vendored wordlist missing from image build context: $path" >&2
       exit 1
@@ -169,24 +171,19 @@ install_vendored_wordlists() {
   install -m 0644 /tmp/vendor-SOURCES.env "$target/SOURCES.env"
   install -m 0644 /tmp/vendor-LICENSE.SecLists "$target/LICENSE.SecLists"
 
-  # API/文件名词典体量适中，默认合并到 ARL 文件泄露枚举字典。
   cat \
     /tmp/high-value-paths.txt \
     /tmp/vendor-api-endpoints.txt \
     /tmp/vendor-raft-small-files.txt \
-    >"$combined_files"
+    >"$VENDORED_FILE_DICT"
 
-  # 完整子域名字典超过 16 万项。默认仍使用高价值集合，避免每个根域名
-  # 都产生超大规模 DNS 查询；显式启用后才合并完整快照。
   if [[ "$ARL_MERGE_FULL_DOMAIN_WORDLIST" == 'true' ]]; then
-    cat /tmp/high-value-subdomains.txt /tmp/vendor-subdomains-main.txt >"$combined_domains"
+    cat /tmp/high-value-subdomains.txt /tmp/vendor-subdomains-main.txt >"$VENDORED_DOMAIN_DICT"
     log '已启用完整 16 万级子域名字典合并'
   else
-    cp /tmp/high-value-subdomains.txt "$combined_domains"
+    cp /tmp/high-value-subdomains.txt "$VENDORED_DOMAIN_DICT"
     log '完整子域名字典已内置到 /opt/arl-wordlists，默认不自动合并到每次扫描'
   fi
-
-  printf '%s\n' "$combined_files" "$combined_domains"
 }
 
 log '安装系统依赖、Chromium、libpcap 与 PySocks'
@@ -200,14 +197,12 @@ log '应用智能泛解析补丁'
 python3.6 /tmp/patch_arl.py
 
 log '安装仓库内置字典并合并 API/文件路径'
-mapfile -t combined_dicts < <(install_vendored_wordlists)
-file_dict="${combined_dicts[0]}"
-domain_dict="${combined_dicts[1]}"
+install_vendored_wordlists
 
 log '合并高价值路径/子域名字典并替换 Nuclei 适配器'
 python3.6 /tmp/patch_worker.py \
-  --file-dict "$file_dict" \
-  --domain-dict "$domain_dict" \
+  --file-dict "$VENDORED_FILE_DICT" \
+  --domain-dict "$VENDORED_DOMAIN_DICT" \
   --nuclei-adapter /tmp/nuclei_scan.py
 
 install -m 0755 /tmp/afrog-arl /usr/local/bin/afrog-arl
