@@ -34,52 +34,10 @@ sanitize_active_targets() {
     original_limit="$(grep -cve '^[[:space:]]*$' "$OUT/scan-urls.txt" 2>/dev/null || true)"
   fi
   local sanitized="$SCOPE_TMP/scan-urls.sanitized.txt"
-  local stats="$SCOPE_TMP/scan-urls-sanitize-stats.json"
 
-  python3 - "$source" "$sanitized" "$stats" <<'PY'
-import json
-import sys
-from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit
-
-sys.path.insert(0, "/opt/scanner")
-from asset_intelligence import normalize_url, sanitize_query_pairs  # noqa: E402
-
-source = Path(sys.argv[1])
-output = Path(sys.argv[2])
-stats_path = Path(sys.argv[3])
-raw_lines = source.read_text(encoding="utf-8", errors="ignore").splitlines()
-seen = set()
-ordered = []
-invalid = 0
-redacted = 0
-for raw in raw_lines:
-    value = raw.strip()
-    if not value:
-        continue
-    try:
-        parsed = urlsplit(value)
-        _, changed = sanitize_query_pairs(parse_qsl(parsed.query, keep_blank_values=True))
-        redacted += int(changed)
-    except ValueError:
-        pass
-    normalized = normalize_url(value)
-    if not normalized:
-        invalid += 1
-        continue
-    if normalized not in seen:
-        seen.add(normalized)
-        ordered.append(normalized)
-output.write_text("".join(f"{value}\n" for value in ordered), encoding="utf-8")
-stats_path.write_text(
-    json.dumps(
-        {"input": len(raw_lines), "output": len(ordered), "invalid": invalid, "redacted_query_values": redacted},
-        ensure_ascii=False,
-        indent=2,
-    ) + "\n",
-    encoding="utf-8",
-)
-PY
+  python3 /opt/scanner/sanitize_url_targets.py \
+    "$source" "$sanitized" \
+    --stats "$OUT/final-target-sanitize-stats.json"
 
   cp "$sanitized" "$OUT/scan-urls.all.txt"
   if (( original_limit > 0 )); then
@@ -87,7 +45,6 @@ PY
   else
     : >"$OUT/scan-urls.txt"
   fi
-  cp "$stats" "$OUT/final-target-sanitize-stats.json"
   log "主动扫描目标清洗完成：$(grep -cve '^[[:space:]]*$' "$OUT/scan-urls.txt" 2>/dev/null || true) 条"
 }
 
