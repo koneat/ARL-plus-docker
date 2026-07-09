@@ -1,0 +1,75 @@
+name: xray-index-entry-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker-compose.yml'
+      - 'web-ui/patch-xray-entry.sh'
+      - 'enhanced-worker/arl-report-index-wrapper'
+      - 'enhanced-worker/Dockerfile'
+      - 'installer/lib/40-reports.sh'
+      - '.github/workflows/xray-index-entry-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell syntax and wiring
+        run: |
+          set -Eeuo pipefail
+          bash -n web-ui/patch-xray-entry.sh
+          bash -n enhanced-worker/arl-report-index-wrapper
+          bash -n installer/lib/40-reports.sh
+          grep -Fq '${ARL_REPORT_ROOT:-/var/lib/arl-reports}/xray:/code/frontend/xray:ro' docker-compose.yml
+          grep -Fq './web-ui/patch-xray-entry.sh:/usr/local/bin/patch-xray-entry.sh:ro' docker-compose.yml
+          grep -Fq 'sh /usr/local/bin/patch-xray-entry.sh' docker-compose.yml
+          grep -Fq 'COPY enhanced-worker/arl-report-index-wrapper /tmp/arl-report-index-wrapper' enhanced-worker/Dockerfile
+          grep -Fq 'mv /usr/local/bin/arl-report-index /usr/local/libexec/arl-report-index-real' enhanced-worker/Dockerfile
+
+      - name: Test ARL frontend button injection
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          printf '<!doctype html><html><body><div id="app"></div></body></html>\n' >"$tmp/index.html"
+          ARL_FRONTEND_INDEX="$tmp/index.html" sh web-ui/patch-xray-entry.sh
+          grep -Fq 'id="arl-xray-report-entry"' "$tmp/index.html"
+          grep -Fq 'href="/xray/index.html"' "$tmp/index.html"
+          ARL_FRONTEND_INDEX="$tmp/index.html" sh web-ui/patch-xray-entry.sh
+          test "$(grep -Fc 'id="arl-xray-report-entry"' "$tmp/index.html")" -eq 1
+
+      - name: Test Xray primary index publishing
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/libexec" "$tmp/reports/xray"
+          cat >"$tmp/libexec/real" <<'SH'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          mkdir -p "$ARL_REPORT_ROOT/xray" "$ARL_REPORT_ROOT/afrog"
+          cat >"$ARL_REPORT_ROOT/index.html" <<'HTML'
+          <!doctype html><html><head><meta charset="utf-8"></head><body><main><a href="xray/proxy.html">Xray</a><a href="afrog/index.html">Afrog</a></main></body></html>
+          HTML
+          SH
+          chmod +x "$tmp/libexec/real"
+          sed \
+            -e "s#REAL_INDEXER='/usr/local/libexec/arl-report-index-real'#REAL_INDEXER='$tmp/libexec/real'#" \
+            -e 's/python3\.6/python3/' \
+            enhanced-worker/arl-report-index-wrapper >"$tmp/wrapper"
+          chmod +x "$tmp/wrapper"
+          ARL_REPORT_ROOT="$tmp/reports" "$tmp/wrapper"
+          test -s "$tmp/reports/xray/index.html"
+          grep -Fq '<base href="/report/">' "$tmp/reports/xray/index.html"
+          grep -Fq 'data-primary-entry="/xray/index.html"' "$tmp/reports/xray/index.html"
+
+      - name: Verify legacy report compatibility
+        run: |
+          set -Eeuo pipefail
+          grep -Fq '${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/code/frontend/report:ro' docker-compose.yml
+          grep -Fq '(root / "index.html").write_text(root_index' installer/lib/40-reports.sh
+          grep -Fq '(xray / "index.html").write_text(root_index' installer/lib/40-reports.sh
