@@ -11,6 +11,11 @@ from typing import Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 HOST_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.I)
+SENSITIVE_VALUE_RE = re.compile(
+    r"^(?:eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{8,}|"
+    r"(?:AKIA|ASIA)[0-9A-Z]{16}|(?:ghp|github_pat|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}|"
+    r"AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[0-9A-Za-z-]{20,})$"
+)
 SENSITIVE_EXTENSIONS = {
     ".env", ".bak", ".old", ".save", ".sql", ".sqlite", ".db", ".log", ".map", ".yaml", ".yml",
     ".json", ".xml", ".ini", ".conf", ".config", ".properties", ".zip", ".tar", ".gz", ".tgz", ".7z", ".rar",
@@ -23,7 +28,7 @@ HIGH_KEYWORDS = {
     "wallet", "withdraw", "transfer", "settlement", "report", "metrics", "prometheus", "trace", "logs",
 }
 API_HINTS = {"api", "rest", "rpc", "graphql", "webhook", "callback", "openapi", "swagger", "api-docs"}
-SECRET_PARAM_HINTS = {"token", "key", "secret", "password", "passwd", "auth", "jwt", "session", "signature", "sign"}
+SECRET_PARAM_HINTS = {"token", "key", "secret", "password", "passwd", "auth", "jwt", "session", "signature", "sign", "apikey", "api_key", "access_token", "refresh_token"}
 
 
 def read_lines(paths: Iterable[Path]) -> Iterable[str]:
@@ -73,6 +78,23 @@ def normalize_host(value: str) -> str | None:
     return None
 
 
+def sanitize_query_pairs(pairs: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], bool]:
+    sanitized: list[tuple[str, str]] = []
+    changed = False
+    for name, value in pairs:
+        normalized_name = name.lower().replace("-", "_")
+        sensitive_name = normalized_name in SECRET_PARAM_HINTS or any(
+            hint in normalized_name for hint in ("token", "secret", "password", "passwd", "signature", "credential")
+        )
+        sensitive_value = bool(SENSITIVE_VALUE_RE.match(value))
+        if sensitive_name or sensitive_value:
+            sanitized.append((name, ""))
+            changed = changed or bool(value)
+        else:
+            sanitized.append((name, value))
+    return sanitized, changed
+
+
 def normalize_url(value: str) -> str | None:
     try:
         parsed = urlsplit(value.strip())
@@ -91,7 +113,7 @@ def normalize_url(value: str) -> str | None:
     if port and not ((parsed.scheme.lower() == "http" and port == 80) or (parsed.scheme.lower() == "https" and port == 443)):
         netloc = f"{netloc}:{port}"
     path = re.sub(r"/{2,}", "/", parsed.path or "/")
-    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    query_pairs, _ = sanitize_query_pairs(parse_qsl(parsed.query, keep_blank_values=True))
     query = urlencode(sorted(query_pairs), doseq=True)
     return urlunsplit((parsed.scheme.lower(), netloc, path, query, ""))
 
@@ -115,7 +137,9 @@ def url_score(url: str) -> tuple[int, list[str]]:
         score += 2
         reasons.append("parameters")
         parameter_names = {name.lower() for name, _ in parse_qsl(parsed.query, keep_blank_values=True)}
-        if parameter_names & SECRET_PARAM_HINTS:
+        if parameter_names & SECRET_PARAM_HINTS or any(
+            any(hint in name for hint in ("token", "secret", "password", "signature")) for name in parameter_names
+        ):
             score += 2
             reasons.append("sensitive-parameter")
     if tokens & API_HINTS:
@@ -155,7 +179,14 @@ def cmd_urls(args: argparse.Namespace) -> int:
     accepted: dict[str, dict[str, object]] = {}
     rejected = 0
     invalid = 0
+    redacted_query_values = 0
     for raw in read_lines(args.inputs):
+        try:
+            original = urlsplit(raw)
+            _, changed = sanitize_query_pairs(parse_qsl(original.query, keep_blank_values=True))
+            redacted_query_values += int(changed)
+        except ValueError:
+            pass
         url = normalize_url(raw)
         if not url:
             invalid += 1
@@ -206,6 +237,7 @@ def cmd_urls(args: argparse.Namespace) -> int:
         "origins": len(origins),
         "rejected_out_of_scope": rejected,
         "invalid": invalid,
+        "redacted_query_values": redacted_query_values,
         "score_distribution": dict(sorted(scores.items(), key=lambda item: int(item[0]))),
     }
     (out / "url-intelligence-stats.json").write_text(json.dumps(stats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
