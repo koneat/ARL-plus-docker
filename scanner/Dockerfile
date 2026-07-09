@@ -57,6 +57,7 @@ COPY \
   run-scan-v2.sh \
   run-intelligence.sh \
   run-nuclei-v2.sh \
+  run-afrog-v2.sh \
   prepare_targets.py \
   uncover_assets.py \
   extract_api_surface.py \
@@ -71,13 +72,15 @@ COPY \
 COPY wordlists/ /opt/scanner/wordlists/
 COPY V2_VERSION /opt/scanner/V2_VERSION
 
-RUN chmod +x \
+RUN sed -i 's/-follow-redirects/-follow-host-redirects/g' /opt/scanner/run-scan.sh && \
+    chmod +x \
       /opt/scanner/entrypoint.sh \
       /opt/scanner/run-scan.sh \
       /opt/scanner/run-scan-uncover.sh \
       /opt/scanner/run-scan-v2.sh \
       /opt/scanner/run-intelligence.sh \
-      /opt/scanner/run-nuclei-v2.sh && \
+      /opt/scanner/run-nuclei-v2.sh \
+      /opt/scanner/run-afrog-v2.sh && \
     mkdir -p /work/results /root/.config /root/nuclei-templates /opt/pocs/nuclei /opt/pocs/afrog /run/secrets
 
 WORKDIR /work
