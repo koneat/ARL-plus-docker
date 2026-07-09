@@ -1,0 +1,46 @@
+name: chaitin-xray-report-permission-validate
+
+on:
+  pull_request:
+    paths:
+      - 'installer/lib/40-reports.sh'
+      - 'installer/lib/61-chaitin-xray.sh'
+      - '.github/workflows/chaitin-xray-report-permission-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  report-permissions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax
+        run: |
+          bash -n installer/lib/40-reports.sh
+          bash -n installer/lib/61-chaitin-xray.sh
+      - name: Verify report root traversal policy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          grep -Fq 'chmod 0711 "$REPORT_ROOT"' installer/lib/40-reports.sh
+          grep -Fq 'find "$REPORT_ROOT" -mindepth 1 -type d -exec chmod 0750 {} +' installer/lib/40-reports.sh
+          grep -Fq 'test -d "$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
+          grep -Fq 'test -w "$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
+          ! grep -Fq 'mkdir -p "$REPORT_DIR" "$ARCHIVE_DIR"' installer/lib/61-chaitin-xray.sh
+      - name: Exercise service-user traversal and report rotation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo groupadd --system arl-xray-ci
+          sudo useradd --system --gid arl-xray-ci --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home arl-xray-ci
+
+          root=/tmp/arl-reports-ci
+          sudo install -d -o root -g root -m 0711 "$root"
+          sudo install -d -o arl-xray-ci -g arl-xray-ci -m 0750 "$root/xray" "$root/xray/history"
+          sudo -u arl-xray-ci test -x "$root"
+          sudo -u arl-xray-ci test -w "$root/xray"
+          sudo -u arl-xray-ci sh -c 'printf old > /tmp/arl-reports-ci/xray/proxy.html'
+          sudo -u arl-xray-ci sh -c 'mv /tmp/arl-reports-ci/xray/proxy.html /tmp/arl-reports-ci/xray/history/proxy-test.html'
+          test -s "$root/xray/history/proxy-test.html"
