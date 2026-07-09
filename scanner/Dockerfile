@@ -83,7 +83,9 @@ RUN sed -i 's/-follow-redirects/-follow-host-redirects/g' /opt/scanner/run-scan.
       /opt/scanner/run-scan-v2.sh \
       /opt/scanner/run-intelligence.sh \
       /opt/scanner/run-nuclei-v2.sh \
-      /opt/scanner/run-afrog-v2.sh && \
+      /opt/scanner/run-afrog-v2.sh \
+      /opt/scanner/sanitize_url_targets.py \
+      /opt/scanner/sanitize_result_artifacts.py && \
     mkdir -p /work/results /root/.config /root/nuclei-templates /opt/pocs/nuclei /opt/pocs/afrog /run/secrets
 
 WORKDIR /work
