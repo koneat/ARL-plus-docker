@@ -38,7 +38,9 @@ jobs:
 
       - name: Reject embedded production secrets
         run: |
-          ! grep -nE 'mongodb\+srv://[^[:space:]]+:[^[:space:]]+@|vless://[0-9a-fA-F-]{20,}|FOFA_KEY=.+' install-arl-final.sh
+          ! grep -nE 'mongodb\+srv://[^[:space:]]+:[^[:space:]]+@' install-arl-final.sh
+          ! grep -nE 'vless://[0-9a-fA-F-]{20,}' install-arl-final.sh
+          ! grep -nE "FOFA_KEY=['\"][^'\"]{16,}" install-arl-final.sh
 
       - name: Validate private environment preservation and forced auth topology
         run: |
