@@ -20,27 +20,25 @@ jobs:
       - name: Pull production ARL image
         run: docker pull -q ki9mu/arl-ki9mu:v3.0.1 >/dev/null
 
-      - name: Inspect exact task hooks
+      - name: Extract exact ARL scan hooks
         run: |
           set -euo pipefail
           cid="$(docker create ki9mu/arl-ki9mu:v3.0.1)"
           trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
           docker cp "$cid:/code/app" /tmp/arl-app
 
-          echo '===== task files ====='
-          find /tmp/arl-app/tasks -maxdepth 1 -type f -printf '%f\n' | sort
+          echo '===== exact nuclei references ====='
+          grep -R -n 'nuclei_scan\|NucleiScan' /tmp/arl-app/tasks /tmp/arl-app/services || true
 
-          echo '===== domain method index ====='
-          grep -n -E '^    def |^def ' /tmp/arl-app/tasks/domain.py || true
+          echo '===== DomainTask scan stages 880-1120 ====='
+          sed -n '880,1120p' /tmp/arl-app/tasks/domain.py
 
-          echo '===== nuclei task call ====='
-          grep -R -n -C 25 'nuclei_scan\|NucleiScan' /tmp/arl-app/tasks /tmp/arl-app/services || true
+          echo '===== DomainTask lifecycle 1120-1320 ====='
+          sed -n '1120,1320p' /tmp/arl-app/tasks/domain.py
 
-          echo '===== vulnerability persistence ====='
-          grep -R -n -E -C 20 'plg_name|VulnAsset|vuln.*insert|insert.*vuln|save.*vuln|vuln.*save' /tmp/arl-app/tasks /tmp/arl-app/services /tmp/arl-app/modules || true
-
-          echo '===== domain run lifecycle ====='
-          grep -n -E -C 20 'def run\(|def start\(|def task\(|task_status|task_tag|scan.*finish|finish.*scan' /tmp/arl-app/tasks/domain.py || true
-
-          echo '===== celery registered tasks ====='
-          grep -n -E -C 20 '@celery.task|DomainTask|AssetTask|domain_task|asset_task' /tmp/arl-app/celerytask.py || true
+          echo '===== vuln persistence references ====='
+          grep -R -l 'plg_name' /tmp/arl-app | sort
+          for file in $(grep -R -l 'plg_name' /tmp/arl-app/tasks /tmp/arl-app/services /tmp/arl-app/modules 2>/dev/null | sort); do
+            echo "--- $file"
+            grep -n -C 8 'plg_name' "$file" | head -n 160
+          done
