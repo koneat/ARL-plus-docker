@@ -29,8 +29,6 @@ if not os.path.isfile(source):
 with io.open(source, "r", encoding="utf-8") as handle:
     content = handle.read()
 
-# /xray/index.html 与旧 /report/index.html 共用同一份页面。
-# base 保证页面内的 Xray、Afrog、详情和历史报告链接仍指向 /report/。
 if '<base href="/report/">' not in content:
     if "<head>" in content:
         content = content.replace("<head>", '<head>\n<base href="/report/">', 1)
@@ -42,10 +40,19 @@ if 'data-primary-entry="/xray/index.html"' not in content:
     badge = (
         '<div data-primary-entry="/xray/index.html" '
         'style="margin-bottom:12px;color:#6b7280">'
-        '主入口：<strong>/xray/index.html</strong></div>'
+        '主入口：<strong>/xray/index.html</strong> | '
+        '<a href="/report/scanner/index.html">Scanner V2 增强扫描</a>'
+        '</div>'
     )
     if marker in content:
         content = content.replace(marker, marker + badge, 1)
+elif '/report/scanner/index.html' not in content:
+    marker = '</div>'
+    link = ' | <a href="/report/scanner/index.html">Scanner V2 增强扫描</a>'
+    primary = content.find('data-primary-entry="/xray/index.html"')
+    end = content.find(marker, primary)
+    if primary >= 0 and end >= 0:
+        content = content[:end] + link + content[end:]
 
 os.makedirs(xray_dir, exist_ok=True)
 temporary = target + ".tmp"
