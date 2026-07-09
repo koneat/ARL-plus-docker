@@ -30,6 +30,7 @@ def cdn_stats(path: Path) -> dict[str, Any]:
     providers: Counter[str] = Counter()
     kinds: Counter[str] = Counter()
     records = 0
+    invalid = 0
     if path.is_file():
         for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
             if not raw.strip():
@@ -37,22 +38,29 @@ def cdn_stats(path: Path) -> dict[str, Any]:
             try:
                 item = json.loads(raw)
             except json.JSONDecodeError:
+                invalid += 1
                 continue
             if not isinstance(item, dict):
+                invalid += 1
                 continue
             records += 1
-            for kind in ("cdn", "cloud", "waf"):
-                value = item.get(kind)
-                if isinstance(value, bool):
-                    if value:
-                        kinds[kind] += 1
-                elif value:
+            for kind, provider_key in (
+                ("cdn", "cdn_name"),
+                ("cloud", "cloud_name"),
+                ("waf", "waf_name"),
+            ):
+                enabled = bool(item.get(kind))
+                provider = item.get(provider_key)
+                if enabled or provider:
                     kinds[kind] += 1
-                    providers[str(value)] += 1
-            provider = item.get("name") or item.get("provider")
-            if provider:
-                providers[str(provider)] += 1
-    return {"records": records, "types": dict(kinds), "providers": dict(providers.most_common(20))}
+                if provider:
+                    providers[f"{kind}:{provider}"] += 1
+    return {
+        "records": records,
+        "invalid": invalid,
+        "types": dict(kinds),
+        "providers": dict(providers.most_common(20)),
+    }
 
 
 def main() -> int:
@@ -125,9 +133,14 @@ def main() -> int:
         f"- TLS SAN：{tls.get('san_domains', 0)}",
         f"- TLS 异常记录：{tls.get('misconfigurations', 0)}",
         f"- CDN/云/WAF 识别记录：{cdn.get('records', 0)}",
+        f"- CDN：{cdn.get('types', {}).get('cdn', 0)}",
+        f"- 云平台：{cdn.get('types', {}).get('cloud', 0)}",
+        f"- WAF：{cdn.get('types', {}).get('waf', 0)}",
     ]
     providers = cdn.get("providers") if isinstance(cdn, dict) else {}
     if isinstance(providers, dict) and providers:
+        lines.append("")
+        lines.append("识别到的主要提供方：")
         lines.extend(f"- {name}: {count}" for name, count in providers.items())
     lines.extend(
         [
