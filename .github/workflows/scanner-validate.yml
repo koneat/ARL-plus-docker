@@ -90,16 +90,19 @@ jobs:
 
           cat >"$tmp/urls.txt" <<'EOF'
           https://example.com/
-          https://api.example.com/v1/admin/users?token=x
+          https://api.example.com/v1/admin/users?token=secret-value&id=7
           https://example.com/assets/app.js
           https://example.com/backup.sql
           https://outside.example.net/api
+          https://example.com:bad/path
           EOF
           python scanner/asset_intelligence.py urls "$tmp/roots.txt" "$tmp/url-out" "$tmp/urls.txt"
-          grep -qx 'https://api.example.com/v1/admin/users?token=x' "$tmp/url-out/urls-priority.txt"
+          grep -qx 'https://api.example.com/v1/admin/users?id=7&token=' "$tmp/url-out/urls-priority.txt"
+          ! grep -q 'secret-value' "$tmp/url-out/urls-intelligence-all.txt"
           grep -qx 'https://example.com/backup.sql' "$tmp/url-out/urls-sensitive.txt"
           grep -qx 'https://example.com/assets/app.js' "$tmp/url-out/urls-js.txt"
           ! grep -q 'outside.example.net' "$tmp/url-out/urls-intelligence-all.txt"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["redacted_query_values"] == 1 and d["invalid"] == 1' "$tmp/url-out/url-intelligence-stats.json"
 
           cat >"$tmp/tlsx.jsonl" <<'EOF'
           {"host":"example.com","subject_an":["api.example.com","outside.example.net"],"tls_version":"tls13"}
@@ -122,7 +125,10 @@ jobs:
           assert item['secret_indicators']
           assert 'https://example.com/api/v2/admin' in endpoints
           assert all('AKIAABCDEFGHIJKLMNOP' not in entry['redacted'] for entry in item['secret_indicators'])
+          assert mod.NoRedirect().redirect_request(None, None, 302, 'Found', {}, 'https://outside.example.net/') is None
           PY
+          grep -q 'build_opener(NoRedirect()' scanner/content_audit.py
+          ! grep -q 'from urllib.request import .*urlopen' scanner/content_audit.py
 
       - name: Test Nuclei normalization and HTML report
         run: |
@@ -197,6 +203,10 @@ jobs:
             done
             for script in /opt/scanner/*.sh; do bash -n "$script"; done
             python3 -m py_compile /opt/scanner/*.py
+            test -s /opt/scanner/wordlists/high-value-paths.txt
+            test -s /opt/scanner/wordlists/subdomain-environments.txt
+            test -s /opt/scanner/wordlists/content-audit-priority.txt
+            test -s /opt/scanner/V2_VERSION
             urlfinder -h >/dev/null 2>&1
             gau --version >/dev/null 2>&1
             tlsx -h >/dev/null 2>&1
