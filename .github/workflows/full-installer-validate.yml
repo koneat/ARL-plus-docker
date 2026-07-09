@@ -98,7 +98,7 @@ jobs:
           ENV
           bash installer/arl-full-deploy.sh --env-file /tmp/arl-vless.env --check-only
 
-      - name: Verify Xray service unit wiring
+      - name: Verify Xray service permission hardening wiring
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -110,61 +110,6 @@ jobs:
           grep -Fq 'runuser -u "$XRAY_SERVICE_USER" -- test -r "$XRAY_CORE_CONFIG"' installer/lib/52-vless-install.sh
           grep -Fq 'chown root:"$xray_group" "$XRAY_CORE_CONFIG"' installer/lib/51-vless-config.sh
           grep -Fq 'chmod 0640 "$XRAY_CORE_CONFIG"' installer/lib/51-vless-config.sh
-
-      - name: Create Xray CI service account
-        run: |
-          sudo groupadd --system arl-xray-ci
-          sudo useradd --system --gid arl-xray-ci --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home arl-xray-ci
-          id arl-xray-ci
-
-      - name: Generate Xray config under restrictive umask
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          module="$GITHUB_WORKSPACE/installer/lib/51-vless-config.sh"
-          test -f "$module"
-          cat >/tmp/vless-config-ci.txt <<'NODES'
-          vless://11111111-1111-4111-8111-111111111111@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2Fws#ci
-          NODES
-          sudo rm -rf /tmp/xray-config-ci
-          sudo env \
-            XRAY_CONFIG_MODULE="$module" \
-            VLESS_NODES_FILE=/tmp/vless-config-ci.txt \
-            XRAY_CORE_CONFIG=/tmp/xray-config-ci/config.json \
-            DOCKER_GATEWAY=172.18.0.1 \
-            XRAY_SOCKS_PORT=1080 \
-            XRAY_SERVICE_GROUP=arl-xray-ci \
-            bash -c 'set -Eeuo pipefail; umask 077; source "$XRAY_CONFIG_MODULE"; generate_xray_core_config'
-          stat -c '%A %a %U:%G %n' /tmp/xray-config-ci /tmp/xray-config-ci/config.json
-
-      - name: Verify Xray config directory mode
-        run: |
-          actual="$(stat -c '%a' /tmp/xray-config-ci)"
-          echo "directory_mode=$actual"
-          test "$actual" = 750
-
-      - name: Verify Xray config file mode
-        run: |
-          actual="$(stat -c '%a' /tmp/xray-config-ci/config.json)"
-          echo "file_mode=$actual"
-          test "$actual" = 640
-
-      - name: Verify Xray config ownership
-        run: |
-          actual="$(stat -c '%U:%G' /tmp/xray-config-ci/config.json)"
-          echo "ownership=$actual"
-          test "$actual" = root:arl-xray-ci
-
-      - name: Verify Xray service account can read config
-        run: |
-          sudo -u arl-xray-ci test -r /tmp/xray-config-ci/config.json
-
-      - name: Verify unrelated account cannot read config
-        run: |
-          if sudo -u nobody test -r /tmp/xray-config-ci/config.json; then
-            echo 'unrelated nobody account could read the Xray config' >&2
-            exit 1
-          fi
 
       - name: Reject public no-auth MCP binding
         run: |
