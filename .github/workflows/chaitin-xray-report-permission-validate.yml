@@ -6,6 +6,13 @@ on:
       - 'installer/lib/40-reports.sh'
       - 'installer/lib/61-chaitin-xray.sh'
       - '.github/workflows/chaitin-xray-report-permission-validate.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'installer/lib/40-reports.sh'
+      - 'installer/lib/61-chaitin-xray.sh'
+      - '.github/workflows/chaitin-xray-report-permission-validate.yml'
 
 permissions:
   contents: read
@@ -26,9 +33,9 @@ jobs:
           set -Eeuo pipefail
           grep -Fq 'chmod 0711 "$REPORT_ROOT"' installer/lib/40-reports.sh
           grep -Fq 'find "$REPORT_ROOT" -mindepth 1 -type d -exec chmod 0750 {} +' installer/lib/40-reports.sh
-          grep -Fq 'test -d "$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
-          grep -Fq 'test -w "$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
-          ! grep -Fq 'mkdir -p "$REPORT_DIR" "$ARCHIVE_DIR"' installer/lib/61-chaitin-xray.sh
+          grep -Fq 'test -d "\$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
+          grep -Fq 'test -w "\$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
+          ! grep -Fq 'mkdir -p "\$REPORT_DIR" "\$ARCHIVE_DIR"' installer/lib/61-chaitin-xray.sh
       - name: Exercise service-user traversal and report rotation
         shell: bash
         run: |
