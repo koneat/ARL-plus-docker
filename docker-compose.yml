@@ -22,6 +22,7 @@ services:
           - ./config-docker.yaml:/code/app/config.yaml
           - ./image:/code/app/tmp_screenshot
           - ./poc:/opt/ARL-NPoC/xing/plugins/upload_poc
+          - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/code/frontend/report:ro"
         entrypoint: ["sh", "-c", "gen_crt.sh; nginx; wait-for-it.sh mongodb:27017; wait-for-it.sh rabbitmq:5672; gunicorn -b 0.0.0.0:5003 app.main:arl_app -w 3 --access-logfile arl_web.log --access-logformat '%({x-real-ip}i)s %(l)s %(u)s %(t)s \"%(r)s\" %(s)s %(b)s \"%(f)s\" \"%(a)s\"'"]
         environment:
           - LANG=en_US.UTF-8
@@ -39,6 +40,7 @@ services:
           - ./config-docker.yaml:/code/app/config.yaml
           - ./image:/code/app/tmp_screenshot
           - ./poc:/opt/ARL-NPoC/xing/plugins/upload_poc
+          - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/var/lib/arl-reports"
         entrypoint: ["sh", "-c", "wait-for-it.sh mongodb:27017; wait-for-it.sh rabbitmq:5672;
         celery -A app.celerytask.celery worker -l info -Q arlgithub -n arlgithub -c 2 -O fair -f arl_worker.log &
          celery -A app.celerytask.celery worker -l info -Q arltask -n arltask -c 2 -O fair -f arl_worker.log"]
@@ -46,6 +48,26 @@ services:
         environment:
           - LANG=en_US.UTF-8
           - TZ=Asia/Shanghai
+          - WILDCARD_SMART_FILTER=${WILDCARD_SMART_FILTER:-true}
+          - WILDCARD_BASELINE_SAMPLES=${WILDCARD_BASELINE_SAMPLES:-3}
+          - WILDCARD_VERIFY_MAX=${WILDCARD_VERIFY_MAX:-500}
+          - WILDCARD_HTTP_CONCURRENCY=${WILDCARD_HTTP_CONCURRENCY:-20}
+          - WILDCARD_HTTP_TIMEOUT=${WILDCARD_HTTP_TIMEOUT:-6}
+          - WILDCARD_BODY_MAX_BYTES=${WILDCARD_BODY_MAX_BYTES:-262144}
+          - WILDCARD_SIMILARITY_THRESHOLD=${WILDCARD_SIMILARITY_THRESHOLD:-0.78}
+          - WILDCARD_KEEP_UNKNOWN_PASSIVE=${WILDCARD_KEEP_UNKNOWN_PASSIVE:-true}
+          - ARL_NUCLEI_TAGS=${ARL_NUCLEI_TAGS:-cve,exposure,config,files,backup,token,logs,debug,misconfig,api,swagger,openapi,graphql,webhook}
+          - ARL_NUCLEI_SEVERITY=${ARL_NUCLEI_SEVERITY:-info,low,medium,high,critical}
+          - ARL_NUCLEI_EXCLUDE_TAGS=${ARL_NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}
+          - ARL_NUCLEI_RATE_LIMIT=${ARL_NUCLEI_RATE_LIMIT:-120}
+          - ARL_NUCLEI_BULK_SIZE=${ARL_NUCLEI_BULK_SIZE:-20}
+          - ARL_NUCLEI_TIMEOUT=${ARL_NUCLEI_TIMEOUT:-10}
+          - ARL_NUCLEI_RETRIES=${ARL_NUCLEI_RETRIES:-1}
+          - ARL_REPORT_ROOT=/var/lib/arl-reports
+          - REPORT_WORLD_READABLE=${REPORT_WORLD_READABLE:-false}
+          - AFROG_PROXY_URL=${AFROG_PROXY_URL:-}
+          - AFROG_CALLBACK_DOMAIN=${AFROG_CALLBACK_DOMAIN:-callback.red}
+          - AFROG_CALLBACK_API_URL=${AFROG_CALLBACK_API_URL:-http://callback.red}
 
     scheduler:
       image: ${ARL_SCHEDULER_IMAGE:-ki9mu/arl-ki9mu:v3.0.1}
