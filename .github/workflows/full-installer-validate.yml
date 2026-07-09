@@ -99,6 +99,34 @@ jobs:
           ENV
           bash installer/arl-full-deploy.sh --env-file /tmp/arl-vless.env --check-only
 
+      - name: Verify Xray dedicated account and config permissions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ! grep -q '^User=nobody$' installer/lib/52-vless-install.sh
+          grep -q 'XRAY_SERVICE_USER:-arl-xray' installer/lib/52-vless-install.sh
+          grep -q 'XRAY_SERVICE_GROUP:-arl-xray' installer/lib/52-vless-install.sh
+          grep -q '^User=${XRAY_SERVICE_USER}$' installer/lib/52-vless-install.sh
+          grep -q '^Group=${XRAY_SERVICE_GROUP}$' installer/lib/52-vless-install.sh
+          grep -q 'runuser -u "$XRAY_SERVICE_USER" -- test -r "$XRAY_CORE_CONFIG"' installer/lib/52-vless-install.sh
+
+          cat >/tmp/vless-config-ci.txt <<'NODES'
+          vless://11111111-1111-4111-8111-111111111111@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2Fws#ci
+          NODES
+          sudo env \
+            VLESS_NODES_FILE=/tmp/vless-config-ci.txt \
+            XRAY_CORE_CONFIG=/tmp/xray-config-ci/config.json \
+            DOCKER_GATEWAY=172.18.0.1 \
+            XRAY_SOCKS_PORT=1080 \
+            XRAY_SERVICE_GROUP=root \
+            bash -c 'set -Eeuo pipefail; umask 077; source installer/lib/51-vless-config.sh; generate_xray_core_config'
+
+          test "$(stat -c '%a' /tmp/xray-config-ci)" = 750
+          test "$(stat -c '%a' /tmp/xray-config-ci/config.json)" = 640
+          test "$(stat -c '%U:%G' /tmp/xray-config-ci/config.json)" = root:root
+          sudo -u nobody test ! -r /tmp/xray-config-ci/config.json
+          sudo -u root test -r /tmp/xray-config-ci/config.json
+
       - name: Reject public no-auth MCP binding
         run: |
           cat >/tmp/arl-bad.env <<'ENV'
