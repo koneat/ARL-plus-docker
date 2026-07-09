@@ -17,6 +17,14 @@ static_validate_installer() {
   fi
   [[ "$leaked" == 'false' ]] || die '公开部署引擎中检测到疑似 Mongo 凭据或 VLESS 节点'
 
+  # 安装器默认值必须指向克隆后的本仓库文件，不能重新引入第三方 Raw 依赖。
+  [[ "$API_DICT_URL" == file://*'/wordlists/vendor/api-endpoints.txt' ]] ||
+    die "API_DICT_URL 必须默认使用仓库内置字典：$API_DICT_URL"
+  [[ "$FUZZ_DICT_URL" == file://*'/wordlists/vendor/raft-small-files.txt' ]] ||
+    die "FUZZ_DICT_URL 必须默认使用仓库内置字典：$FUZZ_DICT_URL"
+  [[ "$DOMAIN_DICT_URL" == file://*'/wordlists/vendor/subdomains-main.txt' ]] ||
+    die "DOMAIN_DICT_URL 必须默认使用仓库内置字典：$DOMAIN_DICT_URL"
+
   validate_env
   if [[ "$ENABLE_VLESS_PROXY" == 'true' ]]; then
     validate_vless_nodes
@@ -39,6 +47,7 @@ main() {
   configure_firewall
   check_dns
   clone_or_update_repo
+  prepare_vendored_wordlists
   prepare_config
   prepare_compose_file
   prepare_compose_env
