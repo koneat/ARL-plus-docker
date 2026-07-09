@@ -74,6 +74,8 @@ COPY wordlists/ /opt/scanner/wordlists/
 COPY V2_VERSION /opt/scanner/V2_VERSION
 
 RUN sed -i 's/-follow-redirects/-follow-host-redirects/g' /opt/scanner/run-scan.sh && \
+    sed -i 's/-field-scope rdn/-field-scope fqdn/g' /opt/scanner/run-scan.sh && \
+    python3 -c "from pathlib import Path; p=Path('/opt/scanner/run-intelligence.sh'); s=p.read_text(); n='-field-scope rdn'; i=s.rfind(n); assert i >= 0; p.write_text(s[:i] + '-field-scope fqdn' + s[i+len(n):])" && \
     chmod +x \
       /opt/scanner/entrypoint.sh \
       /opt/scanner/run-scan.sh \
