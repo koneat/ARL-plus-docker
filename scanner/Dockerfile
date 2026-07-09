@@ -63,6 +63,7 @@ COPY \
   extract_api_surface.py \
   asset_intelligence.py \
   sanitize_url_targets.py \
+  sanitize_result_artifacts.py \
   content_audit.py \
   nuclei_report.py \
   summarize.py \
