@@ -38,6 +38,9 @@ cp "$SCOPE_TMP/cidrs.txt" "$OUT/scope-cidrs.txt"
 log "第一阶段：运行稳定基础扫描链"
 ENABLE_NUCLEI=false /opt/scanner/run-scan-uncover.sh "$TARGET_FILE" "$MODE"
 
+cp "$OUT/domains.txt" "$OUT/domains.augmented-input.txt" 2>/dev/null || true
+cp "$OUT/scope-domains.txt" "$OUT/domains.txt"
+
 if enabled "${ENABLE_SCANNER_V2:-true}"; then
   log "第二阶段：运行资产与 URL 智能增强"
   /opt/scanner/run-intelligence.sh "$OUT" "$MODE"
