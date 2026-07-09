@@ -235,7 +235,8 @@ def main() -> int:
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    scope_roots = load_scope_roots(args.scope_roots)
+    scope_path = args.scope_roots if args.scope_roots is not None else args.output_dir / "domains.txt"
+    scope_roots = load_scope_roots(scope_path)
     urls = load_urls(args.inputs, max(1, min(args.limit, 5000)))
     findings: list[dict[str, Any]] = []
     endpoints: set[str] = set()
