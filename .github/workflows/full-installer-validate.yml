@@ -106,26 +106,33 @@ jobs:
           ! grep -q '^User=nobody$' installer/lib/52-vless-install.sh
           grep -q 'XRAY_SERVICE_USER:-arl-xray' installer/lib/52-vless-install.sh
           grep -q 'XRAY_SERVICE_GROUP:-arl-xray' installer/lib/52-vless-install.sh
-          grep -q '^User=${XRAY_SERVICE_USER}$' installer/lib/52-vless-install.sh
-          grep -q '^Group=${XRAY_SERVICE_GROUP}$' installer/lib/52-vless-install.sh
-          grep -q 'runuser -u "$XRAY_SERVICE_USER" -- test -r "$XRAY_CORE_CONFIG"' installer/lib/52-vless-install.sh
+          grep -Fqx 'User=${XRAY_SERVICE_USER}' installer/lib/52-vless-install.sh
+          grep -Fqx 'Group=${XRAY_SERVICE_GROUP}' installer/lib/52-vless-install.sh
+          grep -Fq 'runuser -u "$XRAY_SERVICE_USER" -- test -r "$XRAY_CORE_CONFIG"' installer/lib/52-vless-install.sh
+
+          sudo groupadd --system arl-xray-ci
+          sudo useradd --system --gid arl-xray-ci --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home arl-xray-ci
 
           cat >/tmp/vless-config-ci.txt <<'NODES'
           vless://11111111-1111-4111-8111-111111111111@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2Fws#ci
           NODES
+          sudo rm -rf /tmp/xray-config-ci
           sudo env \
             VLESS_NODES_FILE=/tmp/vless-config-ci.txt \
             XRAY_CORE_CONFIG=/tmp/xray-config-ci/config.json \
             DOCKER_GATEWAY=172.18.0.1 \
             XRAY_SOCKS_PORT=1080 \
-            XRAY_SERVICE_GROUP=root \
+            XRAY_SERVICE_GROUP=arl-xray-ci \
             bash -c 'set -Eeuo pipefail; umask 077; source installer/lib/51-vless-config.sh; generate_xray_core_config'
 
           test "$(stat -c '%a' /tmp/xray-config-ci)" = 750
           test "$(stat -c '%a' /tmp/xray-config-ci/config.json)" = 640
-          test "$(stat -c '%U:%G' /tmp/xray-config-ci/config.json)" = root:root
-          sudo -u nobody test ! -r /tmp/xray-config-ci/config.json
-          sudo -u root test -r /tmp/xray-config-ci/config.json
+          test "$(stat -c '%U:%G' /tmp/xray-config-ci/config.json)" = root:arl-xray-ci
+          sudo -u arl-xray-ci test -r /tmp/xray-config-ci/config.json
+          if sudo -u nobody test -r /tmp/xray-config-ci/config.json; then
+            echo 'unrelated nobody account could read the Xray config' >&2
+            exit 1
+          fi
 
       - name: Reject public no-auth MCP binding
         run: |
