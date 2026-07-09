@@ -71,7 +71,6 @@ jobs:
           ENABLE_ARL_HTTP_PROXY=false
           ENABLE_CHAITIN_XRAY=false
           ENABLE_SMART_WILDCARD=true
-          ENABLE_SCANNER_STACK=true
           BUILD_SCANNER_IMAGE=false
           ENABLE_WORKER_EXTENSIONS=false
           MCP_LOCAL_BIND_IP=127.0.0.1
@@ -98,6 +97,19 @@ jobs:
           MCP_EXTERNAL_PORT=5014
           ENV
           bash installer/arl-full-deploy.sh --env-file /tmp/arl-vless.env --check-only
+
+      - name: Verify Xray service permission hardening wiring
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ! grep -q '^User=nobody$' installer/lib/52-vless-install.sh
+          grep -Fq 'XRAY_SERVICE_USER="${XRAY_SERVICE_USER:-arl-xray}"' installer/lib/52-vless-install.sh
+          grep -Fq 'XRAY_SERVICE_GROUP="${XRAY_SERVICE_GROUP:-arl-xray}"' installer/lib/52-vless-install.sh
+          grep -Fqx 'User=${XRAY_SERVICE_USER}' installer/lib/52-vless-install.sh
+          grep -Fqx 'Group=${XRAY_SERVICE_GROUP}' installer/lib/52-vless-install.sh
+          grep -Fq 'runuser -u "$XRAY_SERVICE_USER" -- test -r "$XRAY_CORE_CONFIG"' installer/lib/52-vless-install.sh
+          grep -Fq 'chown root:"$xray_group" "$XRAY_CORE_CONFIG"' installer/lib/51-vless-config.sh
+          grep -Fq 'chmod 0640 "$XRAY_CORE_CONFIG"' installer/lib/51-vless-config.sh
 
       - name: Reject public no-auth MCP binding
         run: |
