@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_FULL_INSTALLER_VERSION=2026.07.09
+# ARL_FULL_INSTALLER_VERSION=2026.07.09-persistent-worker
 set -Eeuo pipefail
 umask 077
 
@@ -100,6 +100,9 @@ MCP_READ_ONLY="${MCP_READ_ONLY:-true}"
 
 ARL_BIND_IP="${ARL_BIND_IP:-0.0.0.0}"
 ARL_HTTPS_PORT="${ARL_HTTPS_PORT:-5003}"
+ARL_BASE_IMAGE="${ARL_BASE_IMAGE:-ki9mu/arl-ki9mu:v3.0.1}"
+ARL_ENHANCED_WORKER_IMAGE="${ARL_ENHANCED_WORKER_IMAGE:-arl-enhanced-worker:v3.0.1-2026.07}"
+ARL_PROXY_RUNTIME_IMAGE="${ARL_PROXY_RUNTIME_IMAGE:-arl-proxy-runtime:v3.0.1-2026.07}"
 
 FOFA_EMAIL="${FOFA_EMAIL-}"
 FOFA_KEY="${FOFA_KEY-}"
@@ -129,14 +132,22 @@ ENABLE_SMART_WILDCARD="${ENABLE_SMART_WILDCARD:-true}"
 ENABLE_SCANNER_STACK="${ENABLE_SCANNER_STACK:-true}"
 BUILD_SCANNER_IMAGE="${BUILD_SCANNER_IMAGE:-true}"
 ENABLE_WORKER_EXTENSIONS="${ENABLE_WORKER_EXTENSIONS:-false}"
+INSTALL_CHROMIUM="${INSTALL_CHROMIUM:-true}"
 AFROG_VERSION="${AFROG_VERSION:-v3.5.3}"
 RAD_VERSION="${RAD_VERSION:-1.0}"
 REPORT_ROOT="${REPORT_ROOT:-/var/lib/arl-reports}"
 REPORT_WORLD_READABLE="${REPORT_WORLD_READABLE:-false}"
 
+AFROG_PROXY_URL="${AFROG_PROXY_URL-}"
 AFROG_CALLBACK_DOMAIN="${AFROG_CALLBACK_DOMAIN:-callback.red}"
 AFROG_CALLBACK_API_URL="${AFROG_CALLBACK_API_URL:-http://callback.red}"
 
+ARL_NUCLEI_TAGS="${ARL_NUCLEI_TAGS:-cve,exposure,config,files,backup,token,logs,debug,misconfig,api,swagger,openapi,graphql,webhook}"
+ARL_NUCLEI_SEVERITY="${ARL_NUCLEI_SEVERITY:-info,low,medium,high,critical}"
+ARL_NUCLEI_EXCLUDE_TAGS="${ARL_NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}"
+ARL_NUCLEI_RATE_LIMIT="${ARL_NUCLEI_RATE_LIMIT:-120}"
+
+# 旧配置变量继续接受，但 Worker 扩展已由仓库镜像构建，不再下载代码覆盖运行中容器。
 API_DICT_URL="${API_DICT_URL:-https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/api/api-endpoints.txt}"
 FUZZ_DICT_URL="${FUZZ_DICT_URL:-https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-small-files.txt}"
 DOMAIN_DICT_URL="${DOMAIN_DICT_URL:-https://raw.githubusercontent.com/TheKingOfDuck/fuzzDicts/refs/heads/master/subdomainDicts/main.txt}"
@@ -187,7 +198,6 @@ for module in \
   60-arl-proxy.sh \
   61-chaitin-xray.sh \
   70-afrog-rad.sh \
-  71-worker-support.sh \
   80-enhancements.sh \
   90-main.sh; do
   # shellcheck disable=SC1090
