@@ -29,6 +29,7 @@ jobs:
 
       - name: Apply ARL task patch
         run: |
+          set +e
           docker exec arl-patch sh -ec '
             cp /patch/patch_worker.py /tmp/patch_worker.py
             cp /patch/nuclei_scan.py /tmp/nuclei_scan.py
@@ -38,7 +39,22 @@ jobs:
               --domain-dict /patch/high-value-subdomains.txt \
               --nuclei-adapter /tmp/nuclei_scan.py \
               --afrog-adapter /tmp/afrog_scan.py
-          '
+          ' > /tmp/arl-patch.log 2>&1
+          rc=$?
+          cat /tmp/arl-patch.log
+          echo "$rc" > /tmp/arl-patch.rc
+          exit "$rc"
+
+      - name: Upload patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arl-worker-patch-diagnostics
+          path: |
+            /tmp/arl-patch.log
+            /tmp/arl-patch.rc
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Compile patched Python 3.6 sources
         run: |
