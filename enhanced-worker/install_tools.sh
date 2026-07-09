@@ -15,10 +15,13 @@ fetch() {
   local url="$1"
   local output="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 1200 \
+    # ARL v3.0.1 基础镜像可能仍使用 CentOS 7 的旧 curl，
+    # 不使用 --retry-all-errors 等新版本参数。
+    curl -fL --retry 5 --retry-delay 2 --connect-timeout 20 --max-time 1200 \
+      -A 'arl-enhanced-worker-builder/2026.07' \
       "$url" -o "$output"
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "$output" "$url"
+    wget --tries=5 --timeout=20 -O "$output" "$url"
   else
     python3.6 - "$url" "$output" <<'PY'
 from __future__ import print_function
