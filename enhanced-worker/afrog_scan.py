@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Automatic Afrog integration for ARL tasks.
 
-Compatible with the Python 3.6 runtime in the ARL worker image.  The adapter
+Compatible with the Python 3.6 runtime in the ARL worker image. The adapter
 records whether Afrog/xray did not run, failed, ran with no findings, or ran
 with findings; these states must never be collapsed into a misleading zero.
 """
@@ -138,13 +138,11 @@ def first_value(mapping, *names):
 
 
 def normalize_findings(items):
-    """Map Afrog 3.x JSON and legacy variants to ARL's vuln collection schema."""
+    """Map official Afrog 3.x JSON and legacy variants to ARL schemas."""
     output = []
     seen = set()
     for item in items:
-        # Afrog 3.x JSON uses pocinfo.infoname / infoseg / id.
         pocinfo = item.get("pocinfo") if isinstance(item.get("pocinfo"), dict) else {}
-        # Keep compatibility with Nuclei-shaped and older wrapper output.
         info = item.get("info") if isinstance(item.get("info"), dict) else {}
 
         host_target = str(first_value(item, "target", "host") or "")
@@ -160,7 +158,7 @@ def normalize_findings(items):
         name = str(
             first_value(pocinfo, "infoname", "name")
             or first_value(info, "name")
-            or first_value(item, "vuln_name", "vulnerability", "name")
+            or first_value(item, "vul_name", "vuln_name", "vulnerability", "name")
             or poc_id
             or "Afrog finding"
         )
@@ -179,25 +177,28 @@ def normalize_findings(items):
         summary = {
             "name": name,
             "severity": severity,
-            "target": host_target,
+            "target": host_target or vuln_url,
             "vuln_url": vuln_url,
             "poc": poc_id,
         }
         output.append(
             {
-                # Fields consumed by the existing ARL vulnerability page.
+                # Native generic ARL vuln collection fields.
+                "plg_name": "afrog:{}".format(poc_id or "unknown"),
+                "plg_type": "poc",
+                "vul_name": name,
+                "app_name": "Afrog",
+                "target": host_target or vuln_url,
+                "verify_data": summary,
+                # Fields consumed by Nuclei-style result renderers and exports.
                 "template_url": "",
                 "template_id": poc_id,
                 "vuln_name": name,
                 "vuln_severity": severity,
                 "vuln_url": vuln_url,
                 "curl_command": "",
-                "target": host_target or vuln_url,
-                # Extra attribution/evidence retained for filtering and review.
-                "plg_name": "afrog",
-                "plg_type": "scan",
-                "app_name": "web",
-                "verify_data": json.dumps(summary, ensure_ascii=False, sort_keys=True),
+                # Preserve the original Afrog record for evidence/review.
+                "scanner": "afrog",
                 "verify_obj": item,
             }
         )
