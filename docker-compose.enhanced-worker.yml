@@ -8,6 +8,7 @@ services:
         AFROG_VERSION: ${AFROG_VERSION:-v3.5.3}
         RAD_VERSION: ${RAD_VERSION:-1.0}
         INSTALL_CHROMIUM: ${INSTALL_CHROMIUM:-true}
+        ARL_MERGE_FULL_DOMAIN_WORDLIST: ${ARL_MERGE_FULL_DOMAIN_WORDLIST:-false}
     image: ${ARL_ENHANCED_WORKER_IMAGE:-arl-enhanced-worker:v3.0.1-2026.07}
     environment:
       - LANG=en_US.UTF-8
