@@ -7,13 +7,25 @@ PY
 
 prepare_compose_env() {
   local compose_env="${ARL_DIR}/.env"
+  local env_tool="${ARL_DIR}/scripts/compose-env.py"
+  local saved_arl_api_key='' saved_mcp_token=''
+  local key value
+  local -a persistent_keys=(ARL_WORKER_IMAGE ARL_WEB_IMAGE ARL_SCHEDULER_IMAGE)
+  declare -A persistent_values=()
 
-  # 重复执行时优先复用上一轮生成的 ARL API Key 和 MCP Token，
-  # 避免每次重跑都改变 AI 客户端和 ARL 的认证信息。
+  [[ -f "$env_tool" ]] || die "仓库缺少 scripts/compose-env.py"
+
+  # 重复执行时复用凭据和已经安全切换过的持久镜像选择，
+  # 避免安装器覆盖 .env 后让服务退回基础镜像。
   if [[ -f "$compose_env" ]]; then
-    local saved_arl_api_key saved_mcp_token
-    saved_arl_api_key="$(sed -n 's/^ARL_API_KEY=//p' "$compose_env" | head -n 1)"
-    saved_mcp_token="$(sed -n 's/^MCP_TOKEN=//p' "$compose_env" | head -n 1)"
+    saved_arl_api_key="$(python3 "$env_tool" "$compose_env" get ARL_API_KEY 2>/dev/null || true)"
+    saved_mcp_token="$(python3 "$env_tool" "$compose_env" get MCP_TOKEN 2>/dev/null || true)"
+
+    for key in "${persistent_keys[@]}"; do
+      if python3 "$env_tool" "$compose_env" has "$key"; then
+        persistent_values["$key"]="$(python3 "$env_tool" "$compose_env" get "$key")"
+      fi
+    done
 
     if [[ -z "$ARL_API_KEY" && -n "$saved_arl_api_key" ]]; then
       ARL_API_KEY="$saved_arl_api_key"
@@ -53,7 +65,7 @@ for i, line in enumerate(lines):
     if in_arl and re.match(r"^[A-Za-z0-9_]+\s*:", line) and not line.startswith(" "):
         break
     if in_arl and re.match(r"^\s{2}API_KEY\s*:", line):
-        lines[i] = f"  API_KEY: {json.dumps(value)}\n"
+        lines[i] = "  API_KEY: {}\n".format(json.dumps(value))
         done = True
         break
 if not done:
@@ -83,11 +95,38 @@ ARL_API_KEY=${ARL_API_KEY}
 ARL_BASE_URL=https://web
 ARL_VERIFY_TLS=false
 ARL_TIMEOUT=30
-
 ARL_BIND_IP=${ARL_BIND_IP}
 ARL_HTTPS_PORT=${ARL_HTTPS_PORT}
 ARL_REPORT_ROOT=${REPORT_ROOT}
+ARL_BASE_IMAGE=${ARL_BASE_IMAGE}
+ARL_ENHANCED_WORKER_IMAGE=${ARL_ENHANCED_WORKER_IMAGE}
+ARL_PROXY_RUNTIME_IMAGE=${ARL_PROXY_RUNTIME_IMAGE}
+
+AFROG_VERSION=${AFROG_VERSION}
+RAD_VERSION=${RAD_VERSION}
+INSTALL_CHROMIUM=${INSTALL_CHROMIUM}
+AFROG_CALLBACK_DOMAIN=${AFROG_CALLBACK_DOMAIN}
+AFROG_CALLBACK_API_URL=${AFROG_CALLBACK_API_URL}
+REPORT_WORLD_READABLE=${REPORT_WORLD_READABLE}
+
+ARL_NUCLEI_TAGS=${ARL_NUCLEI_TAGS}
+ARL_NUCLEI_SEVERITY=${ARL_NUCLEI_SEVERITY}
+ARL_NUCLEI_EXCLUDE_TAGS=${ARL_NUCLEI_EXCLUDE_TAGS}
+ARL_NUCLEI_RATE_LIMIT=${ARL_NUCLEI_RATE_LIMIT}
 EOF
   chmod 600 "$compose_env"
+
+  if [[ -n "$AFROG_PROXY_URL" ]]; then
+    python3 "$env_tool" "$compose_env" set AFROG_PROXY_URL "$AFROG_PROXY_URL"
+  fi
+
+  for key in "${persistent_keys[@]}"; do
+    value="${persistent_values[$key]:-}"
+    if [[ -n "$value" ]]; then
+      python3 "$env_tool" "$compose_env" set "$key" "$value"
+      ok "保留现有持久镜像选择：${key}=${value}"
+    fi
+  done
+
   ok "Compose 环境文件已生成：$compose_env"
 }
