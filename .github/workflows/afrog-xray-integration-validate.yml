@@ -64,7 +64,8 @@ jobs:
           spec.loader.exec_module(module)
 
           fake = root / 'afrog'
-          fake.write_text(textwrap.dedent('''#!/usr/bin/env python3
+          fake.write_text(textwrap.dedent('''
+          #!/usr/bin/env python3
           import json, os, sys
           from pathlib import Path
           if '-h' in sys.argv:
@@ -79,7 +80,7 @@ jobs:
           Path(j).write_text(json.dumps(data))
           Path(o).write_text('<html>report</html>')
           raise SystemExit(0)
-          '''))
+          ''').lstrip())
           fake.chmod(0o755)
 
           os.environ['ARL_AFROG_BIN'] = str(fake)
