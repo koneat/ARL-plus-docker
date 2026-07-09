@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_FULL_INSTALLER_VERSION=2026.07.09-persistent-worker
+# ARL_FULL_INSTALLER_VERSION=2026.07.09-vendored-wordlists
 set -Eeuo pipefail
 umask 077
 
@@ -147,10 +147,11 @@ ARL_NUCLEI_SEVERITY="${ARL_NUCLEI_SEVERITY:-info,low,medium,high,critical}"
 ARL_NUCLEI_EXCLUDE_TAGS="${ARL_NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}"
 ARL_NUCLEI_RATE_LIMIT="${ARL_NUCLEI_RATE_LIMIT:-120}"
 
-# 旧配置变量继续接受，但 Worker 扩展已由仓库镜像构建，不再下载代码覆盖运行中容器。
-API_DICT_URL="${API_DICT_URL:-https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/api/api-endpoints.txt}"
-FUZZ_DICT_URL="${FUZZ_DICT_URL:-https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-small-files.txt}"
-DOMAIN_DICT_URL="${DOMAIN_DICT_URL:-https://raw.githubusercontent.com/TheKingOfDuck/fuzzDicts/refs/heads/master/subdomainDicts/main.txt}"
+# 字典完整快照已提交在本仓库。即使旧私密配置仍保存第三方 Raw 地址，
+# clone_or_update_repo 之后也会由 prepare_vendored_wordlists 强制切换到这些本地文件。
+API_DICT_URL="${API_DICT_URL:-file://${ARL_DIR}/wordlists/vendor/api-endpoints.txt}"
+FUZZ_DICT_URL="${FUZZ_DICT_URL:-file://${ARL_DIR}/wordlists/vendor/raft-small-files.txt}"
+DOMAIN_DICT_URL="${DOMAIN_DICT_URL:-file://${ARL_DIR}/wordlists/vendor/subdomains-main.txt}"
 WIH_RULES_URL="${WIH_RULES_URL-}"
 FILELEAK_SERVICE_URL="${FILELEAK_SERVICE_URL-}"
 NUCLEI_SCAN_SERVICE_URL="${NUCLEI_SCAN_SERVICE_URL-}"
@@ -190,6 +191,7 @@ for module in \
   20-config-yaml.sh \
   21-secrets-env.sh \
   22-compose-file.sh \
+  23-wordlists.sh \
   30-deploy.sh \
   40-reports.sh \
   50-vless-utils.sh \
