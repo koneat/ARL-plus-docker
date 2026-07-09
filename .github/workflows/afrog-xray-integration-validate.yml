@@ -44,6 +44,7 @@ jobs:
           import socket
           import sys
           import tempfile
+          import textwrap
           import threading
           import types
           from pathlib import Path
@@ -61,13 +62,14 @@ jobs:
           spec.loader.exec_module(module)
 
           fake = root / 'afrog'
-          fake.write_text(r'''#!/usr/bin/env python3
+          fake.write_text(textwrap.dedent(r'''\
+          #!/usr/bin/env python3
           import json, os, sys
+          from pathlib import Path
           if '-h' in sys.argv:
               print('-T -j -o -S -rl -c -timeout -proxy -nc -silent')
               raise SystemExit(0)
           args = sys.argv[1:]
-          Path = __import__('pathlib').Path
           Path(os.environ['ARGS_OUT']).write_text(json.dumps(args))
           j = args[args.index('-j') + 1]
           o = args[args.index('-o') + 1]
@@ -76,7 +78,7 @@ jobs:
           Path(j).write_text(json.dumps(data))
           Path(o).write_text('<html>report</html>')
           raise SystemExit(0)
-          ''')
+          '''))
           fake.chmod(0o755)
 
           os.environ['ARL_AFROG_BIN'] = str(fake)
