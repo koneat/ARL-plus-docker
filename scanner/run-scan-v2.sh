@@ -24,6 +24,69 @@ cleanup() {
 }
 trap cleanup EXIT
 
+sanitize_active_targets() {
+  local source="$OUT/scan-urls.all.txt"
+  [[ -s "$source" ]] || source="$OUT/scan-urls.txt"
+  [[ -f "$source" ]] || return 0
+
+  local original_limit=0
+  if [[ -f "$OUT/scan-urls.txt" ]]; then
+    original_limit="$(grep -cve '^[[:space:]]*$' "$OUT/scan-urls.txt" 2>/dev/null || true)"
+  fi
+  local sanitized="$SCOPE_TMP/scan-urls.sanitized.txt"
+  local stats="$SCOPE_TMP/scan-urls-sanitize-stats.json"
+
+  python3 - "$source" "$sanitized" "$stats" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/scanner")
+from asset_intelligence import normalize_url, sanitize_query_pairs  # noqa: E402
+from urllib.parse import parse_qsl, urlsplit
+
+source = Path(sys.argv[1])
+output = Path(sys.argv[2])
+stats_path = Path(sys.argv[3])
+seen = set()
+invalid = 0
+redacted = 0
+for raw in source.read_text(encoding="utf-8", errors="ignore").splitlines():
+    value = raw.strip()
+    if not value:
+        continue
+    try:
+        parsed = urlsplit(value)
+        _, changed = sanitize_query_pairs(parse_qsl(parsed.query, keep_blank_values=True))
+        redacted += int(changed)
+    except ValueError:
+        pass
+    normalized = normalize_url(value)
+    if not normalized:
+        invalid += 1
+        continue
+    seen.add(normalized)
+output.write_text("".join(f"{value}\n" for value in sorted(seen)), encoding="utf-8")
+stats_path.write_text(
+    json.dumps(
+        {"input": len(source.read_text(encoding="utf-8", errors="ignore").splitlines()), "output": len(seen), "invalid": invalid, "redacted_query_values": redacted},
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n",
+    encoding="utf-8",
+)
+PY
+
+  cp "$sanitized" "$OUT/scan-urls.all.txt"
+  if (( original_limit > 0 )); then
+    head -n "$original_limit" "$sanitized" >"$OUT/scan-urls.txt"
+  else
+    : >"$OUT/scan-urls.txt"
+  fi
+  cp "$stats" "$OUT/final-target-sanitize-stats.json"
+  log "主动扫描目标清洗完成：$(grep -cve '^[[:space:]]*$' "$OUT/scan-urls.txt" 2>/dev/null || true) 条"
+}
+
 case "$MODE" in
   fast|standard|deep) ;;
   *) echo "不支持的模式：${MODE}" >&2; exit 2 ;;
@@ -47,6 +110,8 @@ if enabled "${ENABLE_SCANNER_V2:-true}"; then
 else
   log "Scanner V2 智能增强已关闭"
 fi
+
+sanitize_active_targets
 
 if enabled "$NUCLEI_REQUESTED"; then
   log "第三阶段：运行协议分流 Nuclei V2"
