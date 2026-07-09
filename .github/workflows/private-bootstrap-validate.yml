@@ -1,0 +1,41 @@
+name: private-bootstrap-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'installer/private-bootstrap.example.sh'
+      - '.github/workflows/private-bootstrap-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell syntax and release pins
+        run: |
+          set -euo pipefail
+          file=installer/private-bootstrap.example.sh
+          bash -n "$file"
+          grep -q "RELEASE_BRANCH=.*release/2026.07.09-xray-afrog-unified-index" "$file"
+          grep -q "REVIEWED_COMMIT=.*bbc20edab61946e619dabab384d0d7aef5f84ef8" "$file"
+          grep -q 'ARL_AUTO_AFROG_SCAN true' "$file"
+          grep -q 'ARL_REQUIRE_XRAY_PROXY true' "$file"
+          grep -q 'docker exec arl_worker arl-report-index' "$file"
+          grep -q 'https://127.0.0.1:5003/report/' "$file"
+          grep -q 'def afrog_scan(self):' "$file"
+
+      - name: Reject embedded production secrets
+        run: |
+          set -euo pipefail
+          file=installer/private-bootstrap.example.sh
+          ! grep -E -q 'mongodb\+srv://[^[:space:]'"'"']+:[^[:space:]'"'"']+@' "$file"
+          ! grep -E -q '(^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9_]{20,}' "$file"
+          ! grep -E -q 'sk-(proj-)?[A-Za-z0-9_-]{20,}' "$file"
+          ! grep -E -q 'vless://[0-9a-fA-F-]{20,}' "$file"
+          ! grep -E -q "CONTROL_PLANE_API_KEY=['\"][^$]" "$file"
+          ! grep -q '18183' "$file"
