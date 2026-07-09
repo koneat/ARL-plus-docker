@@ -23,6 +23,7 @@ COPY wordlists/vendor/SOURCES.env /tmp/vendor-SOURCES.env
 COPY wordlists/vendor/LICENSE.SecLists /tmp/vendor-LICENSE.SecLists
 COPY enhanced-worker/afrog-arl /tmp/afrog-arl
 COPY enhanced-worker/arl-report-index /tmp/arl-report-index
+COPY enhanced-worker/arl-report-index-wrapper /tmp/arl-report-index-wrapper
 COPY enhanced-worker/install_tools.sh /tmp/install_tools.sh
 
 RUN chmod 0755 /tmp/install_tools.sh && \
@@ -31,4 +32,7 @@ RUN chmod 0755 /tmp/install_tools.sh && \
     INSTALL_CHROMIUM="${INSTALL_CHROMIUM}" \
     ARL_MERGE_FULL_DOMAIN_WORDLIST="${ARL_MERGE_FULL_DOMAIN_WORDLIST}" \
     /tmp/install_tools.sh && \
-    rm -f /tmp/install_tools.sh
+    install -d -m 0755 /usr/local/libexec && \
+    mv /usr/local/bin/arl-report-index /usr/local/libexec/arl-report-index-real && \
+    install -m 0755 /tmp/arl-report-index-wrapper /usr/local/bin/arl-report-index && \
+    rm -f /tmp/arl-report-index-wrapper /tmp/install_tools.sh

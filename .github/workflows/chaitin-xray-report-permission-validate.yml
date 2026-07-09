@@ -36,18 +36,20 @@ jobs:
           grep -Fq 'test -d "\$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
           grep -Fq 'test -w "\$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
           ! grep -Fq 'mkdir -p "\$REPORT_DIR" "\$ARCHIVE_DIR"' installer/lib/61-chaitin-xray.sh
-      - name: Exercise service-user traversal and report rotation
+      - name: Exercise traversal modes and report rotation
         shell: bash
         run: |
           set -Eeuo pipefail
-          sudo groupadd --system arl-xray-ci
-          sudo useradd --system --gid arl-xray-ci --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home arl-xray-ci
 
-          root=/tmp/arl-reports-ci
-          sudo install -d -o root -g root -m 0711 "$root"
-          sudo install -d -o arl-xray-ci -g arl-xray-ci -m 0750 "$root/xray" "$root/xray/history"
-          sudo -u arl-xray-ci test -x "$root"
-          sudo -u arl-xray-ci test -w "$root/xray"
-          sudo -u arl-xray-ci sh -c 'printf old > /tmp/arl-reports-ci/xray/proxy.html'
-          sudo -u arl-xray-ci sh -c 'mv /tmp/arl-reports-ci/xray/proxy.html /tmp/arl-reports-ci/xray/history/proxy-test.html'
+          root="$(mktemp -d /tmp/arl-reports-ci.XXXXXX)"
+          trap 'rm -rf "$root"' EXIT
+          chmod 0711 "$root"
+          install -d -m 0750 "$root/xray" "$root/xray/history"
+
+          test -x "$root"
+          test -w "$root/xray"
+          printf old >"$root/xray/proxy.html"
+          mv "$root/xray/proxy.html" "$root/xray/history/proxy-test.html"
           test -s "$root/xray/history/proxy-test.html"
+          test "$(stat -c '%a' "$root")" = '711'
+          test "$(stat -c '%a' "$root/xray")" = '750'
