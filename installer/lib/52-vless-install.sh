@@ -1,3 +1,32 @@
+ensure_xray_service_account() {
+  XRAY_SERVICE_USER="${XRAY_SERVICE_USER:-arl-xray}"
+  XRAY_SERVICE_GROUP="${XRAY_SERVICE_GROUP:-arl-xray}"
+  export XRAY_SERVICE_USER XRAY_SERVICE_GROUP
+
+  if ! getent group "$XRAY_SERVICE_GROUP" >/dev/null 2>&1; then
+    groupadd --system "$XRAY_SERVICE_GROUP"
+  fi
+
+  if ! id -u "$XRAY_SERVICE_USER" >/dev/null 2>&1; then
+    local nologin_shell
+    nologin_shell="$(command -v nologin 2>/dev/null || true)"
+    [[ -n "$nologin_shell" ]] || nologin_shell='/usr/sbin/nologin'
+    [[ -x "$nologin_shell" ]] || nologin_shell='/bin/false'
+
+    useradd \
+      --system \
+      --gid "$XRAY_SERVICE_GROUP" \
+      --home-dir /nonexistent \
+      --shell "$nologin_shell" \
+      --no-create-home \
+      "$XRAY_SERVICE_USER"
+  elif [[ "$(id -gn "$XRAY_SERVICE_USER")" != "$XRAY_SERVICE_GROUP" ]]; then
+    usermod --gid "$XRAY_SERVICE_GROUP" "$XRAY_SERVICE_USER"
+  fi
+
+  ok "Xray-core 专用服务账户：${XRAY_SERVICE_USER}:${XRAY_SERVICE_GROUP}"
+}
+
 install_xray_core() {
   [[ "$ENABLE_VLESS_PROXY" == "true" ]] || {
     warn "已关闭 VLESS/Xray-core 安装"
@@ -28,10 +57,20 @@ install_xray_core() {
   [[ -f "$tmp_dir/unpacked/geosite.dat" ]] &&
     install -m 0644 "$tmp_dir/unpacked/geosite.dat" /usr/local/share/xray-core/geosite.dat
 
+  ensure_xray_service_account
   generate_xray_core_config
 
   XRAY_LOCATION_ASSET=/usr/local/share/xray-core \
     /usr/local/bin/xray-core run -test -config "$XRAY_CORE_CONFIG"
+
+  # 在写入 systemd 单元前，先用实际服务用户验证目录穿越和配置读取权限。
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "$XRAY_SERVICE_USER" -- test -r "$XRAY_CORE_CONFIG" ||
+      die "${XRAY_SERVICE_USER} 无法读取 Xray 配置：${XRAY_CORE_CONFIG}"
+  else
+    su -s /bin/sh -c "test -r '$XRAY_CORE_CONFIG'" "$XRAY_SERVICE_USER" ||
+      die "${XRAY_SERVICE_USER} 无法读取 Xray 配置：${XRAY_CORE_CONFIG}"
+  fi
 
   cat > /etc/systemd/system/arl-vless-xray.service <<EOF
 [Unit]
@@ -42,9 +81,11 @@ Requires=docker.service
 
 [Service]
 Type=simple
-User=nobody
-Group=nogroup
+User=${XRAY_SERVICE_USER}
+Group=${XRAY_SERVICE_GROUP}
+UMask=0027
 Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray-core
+ExecStartPre=/usr/bin/test -r ${XRAY_CORE_CONFIG}
 ExecStart=/usr/local/bin/xray-core run -config ${XRAY_CORE_CONFIG}
 Restart=always
 RestartSec=5
