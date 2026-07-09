@@ -1,3 +1,50 @@
+prepare_chaitin_xray_config() {
+  local config
+  local -a required_configs=(
+    "${CHAITIN_XRAY_DIR}/xray.yaml"
+    "${CHAITIN_XRAY_DIR}/module.xray.yaml"
+    "${CHAITIN_XRAY_DIR}/plugin.xray.yaml"
+  )
+  local missing='false'
+
+  for config in "${required_configs[@]}"; do
+    if [[ ! -s "$config" ]]; then
+      missing='true'
+      break
+    fi
+  done
+
+  if [[ "$missing" == 'true' ]]; then
+    log '首次运行长亭 xray 以生成默认配置；1.9.11 生成配置后会主动退出，这是正常行为'
+
+    # xray 1.9.11 的第一次 webscan 启动只负责生成三份 YAML，然后退出。
+    # 在 systemd 接管前显式完成这一步，避免 systemctl enable --now 因首次退出
+    # 被安装器误判为服务启动失败。
+    (
+      cd "$CHAITIN_XRAY_DIR"
+      set +e
+      timeout 30s runuser -u arl-xray -- \
+        ./xray webscan \
+        --listen "${DOCKER_GATEWAY}:${CHAITIN_XRAY_PORT}" \
+        --html-output "${REPORT_ROOT}/xray/proxy.html"
+      rc=$?
+      set -e
+      case "$rc" in
+        0|1|124) ;;
+        *) warn "长亭 xray 首次配置生成命令退出码：$rc；继续按配置文件结果判断" ;;
+      esac
+    )
+  fi
+
+  for config in "${required_configs[@]}"; do
+    [[ -s "$config" ]] || die "长亭 xray 首次运行后仍未生成配置：$config"
+  done
+
+  chown arl-xray:arl-xray "${required_configs[@]}"
+  chmod 0640 "${required_configs[@]}"
+  ok '长亭 xray 默认配置已准备完成'
+}
+
 install_chaitin_xray() {
   [[ "$ENABLE_CHAITIN_XRAY" == "true" ]] || {
     warn "已关闭长亭 xray Webscan"
@@ -45,6 +92,8 @@ install_chaitin_xray() {
   chmod 0755 "$CHAITIN_XRAY_DIR/xray"
   chmod 0640 "$CHAITIN_XRAY_DIR"/ca.* 2>/dev/null || true
 
+  prepare_chaitin_xray_config
+
   cat > /usr/local/sbin/arl-xray-rotate-report.sh <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -85,6 +134,8 @@ Description=ARL Chaitin xray Webscan
 After=network-online.target docker.service arl-vless-xray.service
 Wants=network-online.target
 Requires=docker.service
+StartLimitIntervalSec=120
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -92,12 +143,13 @@ User=arl-xray
 Group=arl-xray
 WorkingDirectory=${CHAITIN_XRAY_DIR}
 UMask=0027
+ExecStartPre=/usr/bin/test -s ${CHAITIN_XRAY_DIR}/xray.yaml
+ExecStartPre=/usr/bin/test -s ${CHAITIN_XRAY_DIR}/module.xray.yaml
+ExecStartPre=/usr/bin/test -s ${CHAITIN_XRAY_DIR}/plugin.xray.yaml
 ExecStartPre=/usr/local/sbin/arl-xray-rotate-report.sh
 ExecStart=${CHAITIN_XRAY_DIR}/xray webscan --listen ${DOCKER_GATEWAY}:${CHAITIN_XRAY_PORT} --html-output ${REPORT_ROOT}/xray/proxy.html
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=120
-StartLimitBurst=10
 LimitNOFILE=1048576
 NoNewPrivileges=true
 PrivateTmp=true
@@ -111,7 +163,20 @@ EOF
 
   systemctl daemon-reload
   systemctl reset-failed arl-chaitin-xray.service 2>/dev/null || true
-  systemctl enable --now arl-chaitin-xray.service
+  systemctl enable arl-chaitin-xray.service
+
+  # 再保留一次显式重试：即使某个旧版本仍选择在 systemd 首次启动时生成配置，
+  # 第二次启动也能继续，而不会直接中断整个 ARL 安装流程。
+  if ! systemctl start arl-chaitin-xray.service; then
+    warn '长亭 xray 第一次 systemd 启动失败，重置状态后自动重试一次'
+    systemctl reset-failed arl-chaitin-xray.service 2>/dev/null || true
+    sleep 1
+    if ! systemctl start arl-chaitin-xray.service; then
+      systemctl status arl-chaitin-xray.service --no-pager || true
+      journalctl -u arl-chaitin-xray.service -n 120 --no-pager || true
+      die '长亭 xray 重试后仍然启动失败'
+    fi
+  fi
 
   local i
   for i in $(seq 1 45); do

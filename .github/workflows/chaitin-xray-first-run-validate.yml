@@ -1,0 +1,99 @@
+name: chaitin-xray-first-run-validate
+
+on:
+  pull_request:
+    paths:
+      - 'installer/lib/61-chaitin-xray.sh'
+      - '.github/workflows/chaitin-xray-first-run-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  first-run-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate installer shell syntax and first-run guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n installer/lib/61-chaitin-xray.sh
+          grep -q 'prepare_chaitin_xray_config' installer/lib/61-chaitin-xray.sh
+          grep -q 'xray.yaml' installer/lib/61-chaitin-xray.sh
+          grep -q 'module.xray.yaml' installer/lib/61-chaitin-xray.sh
+          grep -q 'plugin.xray.yaml' installer/lib/61-chaitin-xray.sh
+          grep -q 'systemctl reset-failed arl-chaitin-xray.service' installer/lib/61-chaitin-xray.sh
+
+      - name: Download Chaitin xray 1.9.11
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          curl -fsSL \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/repos/chaitin/xray/releases/tags/1.9.11 \
+            >/tmp/release.json
+
+          url="$(jq -r '.assets[] | select(.name == "xray_linux_amd64.zip") | .browser_download_url' /tmp/release.json | head -n1)"
+          test -n "$url"
+          test "$url" != null
+          curl -fL --retry 5 --retry-all-errors "$url" -o /tmp/xray.zip
+          mkdir -p /tmp/chaitin-xray-ci /tmp/chaitin-xray-report
+          unzip -oq /tmp/xray.zip -d /tmp/chaitin-xray-ci
+          binary="$(find /tmp/chaitin-xray-ci -type f \( -name xray_linux_amd64 -o -name xray \) | head -n1)"
+          test -n "$binary"
+          install -m 0755 "$binary" /tmp/chaitin-xray-ci/xray
+
+      - name: Verify first run generates configuration and exits
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd /tmp/chaitin-xray-ci
+          set +e
+          timeout 30s ./xray webscan \
+            --listen 127.0.0.1:17777 \
+            --html-output /tmp/chaitin-xray-report/proxy.html \
+            >/tmp/xray-first-run.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/xray-first-run.log
+          case "$rc" in
+            0|1|124) ;;
+            *) echo "unexpected first-run exit code: $rc" >&2; exit 1 ;;
+          esac
+          test -s xray.yaml
+          test -s module.xray.yaml
+          test -s plugin.xray.yaml
+
+      - name: Verify second run starts proxy listener
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd /tmp/chaitin-xray-ci
+          timeout 45s ./xray webscan \
+            --listen 127.0.0.1:17777 \
+            --html-output /tmp/chaitin-xray-report/proxy.html \
+            >/tmp/xray-second-run.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
+
+          ready=false
+          for _ in $(seq 1 20); do
+            if nc -z -w 1 127.0.0.1 17777; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$ready" != true ]]; then
+            cat /tmp/xray-second-run.log >&2
+            exit 1
+          fi
