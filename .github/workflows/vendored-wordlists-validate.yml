@@ -1,0 +1,126 @@
+name: vendored-wordlists-validate
+
+on:
+  pull_request:
+    paths:
+      - 'wordlists/vendor/**'
+      - 'enhanced-worker/**'
+      - 'docker-compose.enhanced-worker.yml'
+      - 'scripts/update-enhanced-worker.sh'
+      - 'installer/**'
+      - '.github/workflows/vendored-wordlists-validate.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'wordlists/vendor/**'
+      - 'enhanced-worker/**'
+      - 'docker-compose.enhanced-worker.yml'
+      - 'scripts/update-enhanced-worker.sh'
+      - 'installer/**'
+      - '.github/workflows/vendored-wordlists-validate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vendored-wordlists-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        run: |
+          bash -n enhanced-worker/install_tools.sh
+          bash -n scripts/update-enhanced-worker.sh
+          bash -n installer/arl-full-deploy.sh
+          for file in installer/lib/*.sh; do bash -n "$file"; done
+
+      - name: Verify vendored source manifest and checksums
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # shellcheck disable=SC1091
+          source wordlists/vendor/SOURCES.env
+
+          test "$(grep -cve '^[[:space:]]*$' wordlists/vendor/api-endpoints.txt)" = "$API_LINES"
+          test "$(grep -cve '^[[:space:]]*$' wordlists/vendor/raft-small-files.txt)" = "$FUZZ_LINES"
+          test "$(grep -cve '^[[:space:]]*$' wordlists/vendor/subdomains-main.txt)" = "$DOMAIN_LINES"
+
+          test "$(sha256sum wordlists/vendor/api-endpoints.txt | awk '{print $1}')" = "$API_SHA256"
+          test "$(sha256sum wordlists/vendor/raft-small-files.txt | awk '{print $1}')" = "$FUZZ_SHA256"
+          test "$(sha256sum wordlists/vendor/subdomains-main.txt | awk '{print $1}')" = "$DOMAIN_SHA256"
+
+          test "$API_LINES" -ge 250
+          test "$FUZZ_LINES" -ge 10000
+          test "$DOMAIN_LINES" -ge 100000
+
+      - name: Verify installer ignores legacy external dictionary URLs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          cat >"$tmp/arl.env" <<'EOF'
+          API_DICT_URL='https://raw.githubusercontent.com/old/api.txt'
+          FUZZ_DICT_URL='https://raw.githubusercontent.com/old/fuzz.txt'
+          DOMAIN_DICT_URL='https://raw.githubusercontent.com/old/domain.txt'
+          ENABLE_VLESS_PROXY='false'
+          EOF
+          chmod 600 "$tmp/arl.env"
+
+          bash installer/arl-full-deploy.sh \
+            --env-file "$tmp/arl.env" \
+            --check-only
+
+          ! grep -n 'raw.githubusercontent.com/danielmiessler/SecLists' installer/arl-full-deploy.sh
+          ! grep -n 'raw.githubusercontent.com/TheKingOfDuck/fuzzDicts' installer/arl-full-deploy.sh
+          grep -q 'file://${ARL_DIR}/wordlists/vendor/api-endpoints.txt' installer/arl-full-deploy.sh
+          grep -q 'file://${ARL_DIR}/wordlists/vendor/raft-small-files.txt' installer/arl-full-deploy.sh
+          grep -q 'file://${ARL_DIR}/wordlists/vendor/subdomains-main.txt' installer/arl-full-deploy.sh
+
+      - name: Verify Worker build wiring
+        run: |
+          grep -q 'COPY wordlists/vendor/api-endpoints.txt' enhanced-worker/Dockerfile
+          grep -q 'COPY wordlists/vendor/raft-small-files.txt' enhanced-worker/Dockerfile
+          grep -q 'COPY wordlists/vendor/subdomains-main.txt' enhanced-worker/Dockerfile
+          grep -q 'ARL_MERGE_FULL_DOMAIN_WORDLIST' docker-compose.enhanced-worker.yml
+          grep -q '/opt/arl-wordlists/api-endpoints.txt' enhanced-worker/install_tools.sh
+          grep -q "grep -qx 'api/auth/login'" enhanced-worker/install_tools.sh
+
+  build-worker:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build enhanced Worker with vendored dictionaries
+        run: |
+          ARL_MERGE_FULL_DOMAIN_WORDLIST=false \
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.enhanced-worker.yml \
+            build --pull worker
+
+      - name: Smoke-test vendored dictionaries in image
+        run: |
+          docker run --rm --entrypoint sh \
+            arl-enhanced-worker:v3.0.1-2026.07 -c '
+              set -e
+              test -s /opt/arl-wordlists/api-endpoints.txt
+              test -s /opt/arl-wordlists/raft-small-files.txt
+              test -s /opt/arl-wordlists/subdomains-main.txt
+              grep -qx "api/auth/login" /opt/arl-wordlists/api-endpoints.txt
+              grep -qx "index.php" /opt/arl-wordlists/raft-small-files.txt
+              grep -qx "admin" /opt/arl-wordlists/subdomains-main.txt
+              grep -qx "api/auth/login" /code/app/dicts/file_top_2000.txt
+              grep -qx "index.php" /code/app/dicts/file_top_2000.txt
+              grep -qx "admin" /code/app/dicts/domain_2w.txt
+            '
