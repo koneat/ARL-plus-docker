@@ -1,0 +1,139 @@
+name: afrog-xray-integration-validate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'enhanced-worker/**'
+      - 'docker-compose.enhanced-worker.yml'
+      - 'installer/lib/70-afrog-rad.sh'
+      - 'installer/lib/90-main.sh'
+      - 'scripts/update-enhanced-worker.sh'
+      - '.github/workflows/afrog-xray-integration-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  adapter-and-wiring:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate syntax and wiring markers
+        run: |
+          set -euo pipefail
+          python -m py_compile enhanced-worker/afrog_scan.py enhanced-worker/patch_worker.py
+          bash -n installer/lib/70-afrog-rad.sh
+          bash -n installer/lib/90-main.sh
+          bash -n scripts/update-enhanced-worker.sh
+          grep -q 'ARL_XRAY_PROXY_URL' docker-compose.enhanced-worker.yml
+          grep -q 'executed_zero_findings' enhanced-worker/afrog_scan.py
+          grep -q 'self.run_func("afrog_scan", self.afrog_scan)' enhanced-worker/patch_worker.py
+          grep -q 'utils.conn_db("vuln").insert_one(item)' enhanced-worker/patch_worker.py
+
+      - name: Test execution-state distinctions without network
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import json
+          import logging
+          import os
+          import socket
+          import sys
+          import tempfile
+          import threading
+          import types
+          from pathlib import Path
+
+          root = Path(tempfile.mkdtemp())
+          app = types.ModuleType('app')
+          utils = types.ModuleType('app.utils')
+          utils.get_logger = lambda: logging.getLogger('afrog-test')
+          app.utils = utils
+          sys.modules['app'] = app
+          sys.modules['app.utils'] = utils
+
+          spec = importlib.util.spec_from_file_location('afrog_scan', 'enhanced-worker/afrog_scan.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          fake = root / 'afrog'
+          fake.write_text(r'''#!/usr/bin/env python3
+          import json, os, sys
+          if '-h' in sys.argv:
+              print('-T -j -o -S -rl -c -timeout -proxy -nc -silent')
+              raise SystemExit(0)
+          args = sys.argv[1:]
+          Path = __import__('pathlib').Path
+          Path(os.environ['ARGS_OUT']).write_text(json.dumps(args))
+          j = args[args.index('-j') + 1]
+          o = args[args.index('-o') + 1]
+          mode = os.environ.get('FAKE_MODE', 'finding')
+          data = [] if mode == 'zero' else [{'target':'https://example.test','poc':'demo-poc','info':{'name':'Demo Finding','severity':'high'}}]
+          Path(j).write_text(json.dumps(data))
+          Path(o).write_text('<html>report</html>')
+          raise SystemExit(0)
+          ''')
+          fake.chmod(0o755)
+
+          os.environ['ARL_AFROG_BIN'] = str(fake)
+          os.environ['ARL_REPORT_ROOT'] = str(root / 'reports')
+          os.environ['ARL_REQUIRE_XRAY_PROXY'] = 'true'
+          os.environ['ARGS_OUT'] = str(root / 'args.json')
+
+          no_targets = module.afrog_scan([], task_id='no-targets')['status']
+          assert no_targets['status'] == 'skipped_no_targets', no_targets
+          assert no_targets['xray']['status'] == 'not_executed', no_targets
+
+          os.environ['ARL_XRAY_PROXY_URL'] = 'http://127.0.0.1:9'
+          unavailable = module.afrog_scan(['https://example.test'], task_id='unavailable')['status']
+          assert unavailable['status'] == 'skipped_xray_unavailable', unavailable
+          assert unavailable['xray']['status'] == 'unavailable', unavailable
+
+          listener = socket.socket()
+          listener.bind(('127.0.0.1', 0))
+          listener.listen(5)
+          port = listener.getsockname()[1]
+          stop = {'value': False}
+          def acceptor():
+              while not stop['value']:
+                  try:
+                      conn, _ = listener.accept()
+                      conn.close()
+                  except OSError:
+                      return
+          thread = threading.Thread(target=acceptor)
+          thread.daemon = True
+          thread.start()
+          os.environ['ARL_XRAY_PROXY_URL'] = 'http://127.0.0.1:%d' % port
+
+          os.environ['FAKE_MODE'] = 'finding'
+          result = module.afrog_scan(['https://example.test'], task_id='finding')
+          assert result['status']['status'] == 'executed_findings', result
+          assert result['status']['xray']['status'] == 'executed_via_proxy', result
+          assert len(result['findings']) == 1, result
+          assert result['findings'][0]['plg_name'] == 'afrog', result
+          args = json.loads((root / 'args.json').read_text())
+          assert '-proxy' in args, args
+          assert args[args.index('-proxy') + 1].endswith(':%d' % port), args
+
+          os.environ['FAKE_MODE'] = 'zero'
+          zero = module.afrog_scan(['https://example.test'], task_id='zero')
+          assert zero['status']['status'] == 'executed_zero_findings', zero
+          assert zero['status']['xray']['status'] == 'executed_via_proxy', zero
+          assert zero['findings'] == [], zero
+
+          stop['value'] = True
+          listener.close()
+          print('afrog-xray-state-tests-ok')
+          PY
+
+      - name: Validate enhanced Compose environment
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.enhanced-worker.yml config >/tmp/compose.yml
+          grep -q 'ARL_AUTO_AFROG_SCAN: "true"' /tmp/compose.yml
+          grep -q 'ARL_REQUIRE_XRAY_PROXY: "true"' /tmp/compose.yml
+          grep -q 'ARL_XRAY_PROXY_URL' /tmp/compose.yml
