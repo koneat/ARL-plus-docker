@@ -17,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 USER_AGENT = "ARL-Plus-Scanner/2.0 authorized-security-assessment"
 LOCK = threading.Lock()
+HOST_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.I)
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -59,6 +60,24 @@ def redact(value: str) -> str:
     if len(value) <= 8:
         return "***"
     return value[:4] + "…" + value[-4:]
+
+
+def load_scope_roots(path: Path | None) -> list[str]:
+    if path is None or not path.is_file():
+        return []
+    roots: set[str] = set()
+    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        value = raw.strip().lower().strip(".")
+        if HOST_RE.match(value):
+            roots.add(value)
+    return sorted(roots)
+
+
+def host_in_scope(host: str | None, roots: list[str]) -> bool:
+    if not host:
+        return False
+    candidate = host.lower().strip(".")
+    return any(candidate == root or candidate.endswith("." + root) for root in roots)
 
 
 def load_urls(paths: list[Path], limit: int) -> list[str]:
@@ -129,7 +148,7 @@ def request_url(url: str, timeout: int, max_bytes: int, verify_tls: bool) -> dic
         return {"url": url, "status": 0, "error": type(exc).__name__}
 
 
-def analyze(result: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
+def analyze(result: dict[str, Any], scope_roots: list[str] | None = None) -> tuple[dict[str, Any], set[str]]:
     body = result.pop("body", b"")
     if not isinstance(body, bytes) or not body:
         return result, set()
@@ -149,6 +168,10 @@ def analyze(result: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
             if len(secrets) >= 20:
                 break
         base = str(result.get("final_url") or result.get("url") or "")
+        try:
+            base_host = urlsplit(base).hostname
+        except ValueError:
+            base_host = None
         for pattern in ENDPOINT_PATTERNS:
             for match in pattern.finditer(text):
                 value = match.group("value").strip()
@@ -156,10 +179,11 @@ def analyze(result: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
                     value = urljoin(base, value)
                 try:
                     parsed = urlsplit(value)
+                    _ = parsed.port
                 except ValueError:
                     continue
-                base_host = urlsplit(base).hostname
-                if parsed.scheme in {"http", "https", "ws", "wss"} and parsed.hostname == base_host:
+                allowed_host = parsed.hostname == base_host or host_in_scope(parsed.hostname, scope_roots or [])
+                if parsed.scheme in {"http", "https", "ws", "wss"} and allowed_host:
                     endpoints.add(value)
                 if len(endpoints) >= 500:
                     break
@@ -178,7 +202,7 @@ def markdown(findings: list[dict[str, Any]]) -> str:
         f"- 请求总数：{len(findings)}",
         f"- 有价值响应：{len(interesting)}",
         "- 所有疑似密钥仅显示脱敏片段，不在报告中保存完整值。",
-        "- HTTP 跳转不自动跟随，避免离开授权范围。",
+        "- 只提取同一授权根域内接口；HTTP 跳转不自动跟随。",
         "",
     ]
     if not interesting:
@@ -202,6 +226,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Bounded web content leak validator and JS endpoint miner")
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("inputs", nargs="+", type=Path)
+    parser.add_argument("--scope-roots", type=Path)
     parser.add_argument("--limit", type=int, default=int(os.getenv("CONTENT_AUDIT_LIMIT", "500")))
     parser.add_argument("--workers", type=int, default=int(os.getenv("CONTENT_AUDIT_WORKERS", "10")))
     parser.add_argument("--timeout", type=int, default=int(os.getenv("CONTENT_AUDIT_TIMEOUT", "10")))
@@ -210,6 +235,7 @@ def main() -> int:
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    scope_roots = load_scope_roots(args.scope_roots)
     urls = load_urls(args.inputs, max(1, min(args.limit, 5000)))
     findings: list[dict[str, Any]] = []
     endpoints: set[str] = set()
@@ -218,7 +244,7 @@ def main() -> int:
         futures = {pool.submit(request_url, url, args.timeout, args.max_bytes, args.verify_tls): url for url in urls}
         for future in as_completed(futures):
             result = future.result()
-            analyzed, found_endpoints = analyze(result)
+            analyzed, found_endpoints = analyze(result, scope_roots)
             with LOCK:
                 findings.append(analyzed)
                 endpoints.update(found_endpoints)
@@ -233,6 +259,7 @@ def main() -> int:
     stats = {
         "requested": len(urls),
         "completed": len(findings),
+        "scope_roots": len(scope_roots),
         "http_success": sum(1 for item in findings if 200 <= int(item.get("status") or 0) < 400),
         "interesting": sum(1 for item in findings if item.get("interesting")),
         "leak_signatures": sum(len(item.get("leak_signatures") or []) for item in findings),
