@@ -20,6 +20,7 @@ jobs:
         run: |
           set -euo pipefail
           docker pull -q ki9mu/arl-ki9mu:v3.0.1 >/dev/null
+          set +e
           docker run --rm \
             -v "$PWD/enhanced-worker:/patch:ro" \
             -v "$PWD/scanner/wordlists:/wordlists:ro" \
@@ -38,4 +39,8 @@ jobs:
               python3.6 -c "from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch; print(\"production-task-hook-ok\")"
               grep -q "def afrog_scan(self):" /code/app/services/commonTask.py
               grep -q "self.run_func(\"afrog_scan\", self.afrog_scan)" /code/app/services/commonTask.py
-            '
+            ' > /tmp/patch-smoke.log 2>&1
+          rc=$?
+          set -e
+          tail -n 100 /tmp/patch-smoke.log
+          exit "$rc"
