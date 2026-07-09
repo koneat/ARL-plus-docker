@@ -8,6 +8,7 @@ SCAN_ID="$(printf '%s' "$SCAN_ID_RAW" | tr -cd 'a-zA-Z0-9._-' | cut -c1-80)"
 [[ -n "$SCAN_ID" ]] || SCAN_ID="$(date +%Y%m%d-%H%M%S)"
 export SCAN_ID
 OUT="/work/results/${SCAN_ID}"
+SCOPE_TMP="/tmp/arl-scope-${SCAN_ID}"
 NUCLEI_REQUESTED="${ENABLE_NUCLEI:-true}"
 
 log() {
@@ -18,12 +19,22 @@ enabled() {
   [[ "${1,,}" == "true" || "$1" == "1" || "${1,,}" == "yes" || "${1,,}" == "on" ]]
 }
 
+cleanup() {
+  rm -rf "$SCOPE_TMP"
+}
+trap cleanup EXIT
+
 case "$MODE" in
   fast|standard|deep) ;;
   *) echo "不支持的模式：${MODE}" >&2; exit 2 ;;
 esac
 
-mkdir -p "$OUT"
+mkdir -p "$OUT" "$SCOPE_TMP"
+python3 /opt/scanner/prepare_targets.py "$TARGET_FILE" "$SCOPE_TMP"
+cp "$SCOPE_TMP/domains.txt" "$OUT/scope-domains.txt"
+cp "$SCOPE_TMP/ips.txt" "$OUT/scope-ips.txt"
+cp "$SCOPE_TMP/cidrs.txt" "$OUT/scope-cidrs.txt"
+
 log "第一阶段：运行稳定基础扫描链"
 ENABLE_NUCLEI=false /opt/scanner/run-scan-uncover.sh "$TARGET_FILE" "$MODE"
 
@@ -48,6 +59,7 @@ python3 /opt/scanner/render_report.py "$OUT"
 {
   echo
   echo "scanner_v2_completed_at=$(date -Iseconds)"
+  echo "scope_domains=$(grep -cve '^[[:space:]]*$' "$OUT/scope-domains.txt" 2>/dev/null || true)"
   for tool in urlfinder gau alterx tlsx cdncheck; do
     printf '%s=' "$tool"
     "$tool" -version 2>&1 | head -n 1 || "$tool" --version 2>&1 | head -n 1 || true
