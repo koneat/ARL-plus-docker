@@ -7,12 +7,13 @@ ARG INSTALL_CHROMIUM=true
 ARG ARL_MERGE_FULL_DOMAIN_WORDLIST=false
 
 LABEL org.opencontainers.image.title="ARL Persistent Enhanced Worker" \
-      org.opencontainers.image.description="ARL worker with smart wildcard filtering, robust Nuclei output, Chromium, libpcap, PySocks, Afrog, RAD and repository-vendored wordlists"
+      org.opencontainers.image.description="ARL worker with smart wildcard filtering, robust Nuclei output, automatic Afrog via Chaitin xray, Chromium, libpcap, PySocks, RAD and repository-vendored wordlists"
 
 COPY smart-worker/app/services/wildcardSmart.py /code/app/services/wildcardSmart.py
 COPY smart-worker/patch_arl.py /tmp/patch_arl.py
 COPY enhanced-worker/patch_worker.py /tmp/patch_worker.py
 COPY enhanced-worker/nuclei_scan.py /tmp/nuclei_scan.py
+COPY enhanced-worker/afrog_scan.py /tmp/afrog_scan.py
 COPY enhanced-worker/high-value-subdomains.txt /tmp/high-value-subdomains.txt
 COPY scanner/wordlists/high-value-paths.txt /tmp/high-value-paths.txt
 COPY wordlists/vendor/api-endpoints.txt /tmp/vendor-api-endpoints.txt
