@@ -26,6 +26,8 @@ jobs:
             -v "$PWD/scanner/wordlists:/wordlists:ro" \
             ki9mu/arl-ki9mu:v3.0.1 sh -c 'sleep 600' >/dev/null
           docker start arl-patch >/dev/null
+          docker cp arl-patch:/code/app/services/commonTask.py /tmp/commonTask.py
+          grep -n -E '^    def |^def |nuclei_scan|xray_scan|def run\(' /tmp/commonTask.py > /tmp/commonTask-methods.txt || true
 
       - name: Apply ARL task patch
         run: |
@@ -53,6 +55,8 @@ jobs:
           path: |
             /tmp/arl-patch.log
             /tmp/arl-patch.rc
+            /tmp/commonTask.py
+            /tmp/commonTask-methods.txt
           if-no-files-found: error
           retention-days: 1
 
