@@ -1,0 +1,1 @@
+Validation is performed by `.github/workflows/persistent-runtime-validate.yml`, including shell/Python syntax, Compose rendering, `.env` persistence, non-destructive updater checks and actual Docker image builds.
