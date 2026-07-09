@@ -13,11 +13,16 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 USER_AGENT = "ARL-Plus-Scanner/2.0 authorized-security-assessment"
-MAX_REDIRECTS = 5
 LOCK = threading.Lock()
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
 
 SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
@@ -72,6 +77,10 @@ def load_urls(paths: list[Path], limit: int) -> list[str]:
                 continue
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 continue
+            try:
+                _ = parsed.port
+            except ValueError:
+                continue
             seen.add(value)
             result.append(value)
             if len(result) >= limit:
@@ -85,8 +94,9 @@ def request_url(url: str, timeout: int, max_bytes: int, verify_tls: bool) -> dic
     if not verify_tls:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
+    opener = build_opener(NoRedirect(), HTTPSHandler(context=context))
     try:
-        with urlopen(req, timeout=timeout, context=context) as response:
+        with opener.open(req, timeout=timeout) as response:
             status = int(getattr(response, "status", 200))
             final_url = response.geturl()
             content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
@@ -110,7 +120,11 @@ def request_url(url: str, timeout: int, max_bytes: int, verify_tls: bool) -> dic
                 "sha256": hashlib.sha256(body).hexdigest(),
             }
     except HTTPError as exc:
-        return {"url": url, "status": int(exc.code), "error": "http-error"}
+        result: dict[str, Any] = {"url": url, "status": int(exc.code), "error": "http-error"}
+        location = exc.headers.get("Location") if exc.headers else None
+        if location:
+            result["redirect_location"] = location
+        return result
     except (URLError, TimeoutError, ssl.SSLError, OSError, ValueError) as exc:
         return {"url": url, "status": 0, "error": type(exc).__name__}
 
@@ -164,6 +178,7 @@ def markdown(findings: list[dict[str, Any]]) -> str:
         f"- 请求总数：{len(findings)}",
         f"- 有价值响应：{len(interesting)}",
         "- 所有疑似密钥仅显示脱敏片段，不在报告中保存完整值。",
+        "- HTTP 跳转不自动跟随，避免离开授权范围。",
         "",
     ]
     if not interesting:
@@ -223,6 +238,7 @@ def main() -> int:
         "leak_signatures": sum(len(item.get("leak_signatures") or []) for item in findings),
         "secret_indicators": sum(len(item.get("secret_indicators") or []) for item in findings),
         "endpoints": len(endpoints),
+        "redirects_not_followed": sum(1 for item in findings if item.get("redirect_location")),
         "errors": sum(1 for item in findings if item.get("error")),
     }
     (args.output_dir / "content-audit-stats.json").write_text(
