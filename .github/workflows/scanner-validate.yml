@@ -19,6 +19,7 @@ on:
       - 'docker-compose.scanner.yml'
       - 'scanner/**'
       - 'scripts/scan-enhanced.sh'
+      - 'SCANNER.md'
       - 'SCANNER_V2.md'
       - '.github/workflows/scanner-validate.yml'
 
@@ -105,11 +106,15 @@ jobs:
           python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["redacted_query_values"] == 1 and d["invalid"] == 1' "$tmp/url-out/url-intelligence-stats.json"
 
           cat >"$tmp/tlsx.jsonl" <<'EOF'
-          {"host":"example.com","subject_an":["api.example.com","outside.example.net"],"tls_version":"tls13"}
+          {"host":"example.com","subject_an":["api.example.com","outside.example.net"],"domains":["edge.example.com"],"subject_cn":"www.example.com","tls_version":"tls13","wildcard_certificate":true}
           EOF
           python scanner/asset_intelligence.py tlsx "$tmp/roots.txt" "$tmp/tlsx.jsonl" "$tmp/tls-out"
           grep -qx 'api.example.com' "$tmp/tls-out/tls-san-domains.txt"
+          grep -qx 'edge.example.com' "$tmp/tls-out/tls-san-domains.txt"
+          grep -qx 'www.example.com' "$tmp/tls-out/tls-san-domains.txt"
           ! grep -q 'outside.example.net' "$tmp/tls-out/tls-san-domains.txt"
+          grep -q 'wildcard_certificate' "$tmp/tls-out/tls-findings.jsonl"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["san_domains"] == 3 and d["misconfigurations"] == 1' "$tmp/tls-out/tls-stats.json"
 
       - name: Test content audit analysis without network
         run: |
@@ -119,11 +124,16 @@ jobs:
           spec = importlib.util.spec_from_file_location('content_audit', Path('scanner/content_audit.py'))
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
-          body = b"AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nconst api='/api/v2/admin';\n"
-          item, endpoints = mod.analyze({'url':'https://example.com/app.js','final_url':'https://example.com/app.js','status':200,'content_type':'application/javascript','body':body})
+          body = b"AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nconst local='/api/v2/admin';\nconst sibling='https://api.example.com/v3/users';\nconst outside='https://outside.example.net/api';\n"
+          item, endpoints = mod.analyze(
+              {'url':'https://www.example.com/app.js','final_url':'https://www.example.com/app.js','status':200,'content_type':'application/javascript','body':body},
+              ['example.com'],
+          )
           assert item['interesting'] is True
           assert item['secret_indicators']
-          assert 'https://example.com/api/v2/admin' in endpoints
+          assert 'https://www.example.com/api/v2/admin' in endpoints
+          assert 'https://api.example.com/v3/users' in endpoints
+          assert 'https://outside.example.net/api' not in endpoints
           assert all('AKIAABCDEFGHIJKLMNOP' not in entry['redacted'] for entry in item['secret_indicators'])
           assert mod.NoRedirect().redirect_request(None, None, 302, 'Found', {}, 'https://outside.example.net/') is None
           PY
@@ -148,7 +158,7 @@ jobs:
           printf '{"requested":1,"interesting":1,"leak_signatures":1,"secret_indicators":0,"endpoints":0,"errors":0}\n' >"$tmp/content-audit-stats.json"
           printf '{"priority_urls":1,"final_scan_urls":1}\n' >"$tmp/intelligence-stats.json"
           printf '{"san_domains":1,"misconfigurations":0}\n' >"$tmp/tls-stats.json"
-          : >"$tmp/cdncheck.jsonl"
+          printf '{"input":"example.com","ip":"192.0.2.1","cdn":true,"cdn_name":"cloudflare","waf":true,"waf_name":"cloudflare"}\n' >"$tmp/cdncheck.jsonl"
           : >"$tmp/afrog.json"
           : >"$tmp/errors.log"
           : >"$tmp/manifest.txt"
@@ -157,8 +167,9 @@ jobs:
           python scanner/render_report.py "$tmp"
           grep -q 'Env File Exposure' "$tmp/nuclei-findings.md"
           grep -q 'Scanner V2 资产与 URL 情报' "$tmp/summary.md"
+          grep -q 'cdn:cloudflare' "$tmp/summary.md"
           grep -q 'ARL Plus Scanner V2' "$tmp/report.html"
-          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["nuclei_status"]["findings"] == 1 and d["scanner_v2"]["content_audit"]["interesting"] == 1' "$tmp/summary.json"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["nuclei_status"]["findings"] == 1; assert d["scanner_v2"]["content_audit"]["interesting"] == 1; assert d["scanner_v2"]["cdn_cloud_waf"]["types"]["cdn"] == 1; assert d["scanner_v2"]["cdn_cloud_waf"]["providers"]["cdn:cloudflare"] == 1' "$tmp/summary.json"
 
       - name: Validate Compose and isolation
         run: |
@@ -167,12 +178,16 @@ jobs:
           grep -q 'arl-plus-scanner:2026.07-v2' /tmp/scanner-compose.yml
           grep -q 'ENABLE_SCANNER_V2' /tmp/scanner-compose.yml
           grep -q 'ENABLE_CONTENT_AUDIT' /tmp/scanner-compose.yml
+          grep -q 'ENABLE_SOURCEMAP_V2' /tmp/scanner-compose.yml
+          grep -q 'ENABLE_FFUF_V2' /tmp/scanner-compose.yml
           grep -q 'NUCLEI_NETWORK_TAGS' /tmp/scanner-compose.yml
           ! grep -q '^    ports:' /tmp/scanner-compose.yml
           ! grep -R --line-number -E 'docker compose (down|restart)|mongodb|rabbitmq|mcp-local|arl_web|arl_worker' scanner scripts/scan-enhanced.sh docker-compose.scanner.yml
           grep -q 'UNCOVER_ACCEPT_IP_ONLY.*false' docker-compose.scanner.yml
           grep -q 'cap_drop:' docker-compose.scanner.yml
           grep -q 'no-new-privileges:true' docker-compose.scanner.yml
+          grep -q 'follow-host-redirects' scanner/run-intelligence.sh
+          ! grep -q -- '-follow-redirects' scanner/run-intelligence.sh
           grep -q 'dos,fuzz,intrusive,bruteforce' scanner/run-nuclei-v2.sh
           ! grep -q -- '-code' scanner/run-nuclei-v2.sh
           ! grep -q -- '-enable-self-contained' scanner/run-nuclei-v2.sh
@@ -218,7 +233,7 @@ jobs:
             for f in domains.txt domains.all.txt live-urls.txt katana.txt sourcemap-candidates.txt open-services.txt ips.txt httpx.jsonl scan-urls.txt errors.log manifest.txt; do : >"$tmp/$f"; done
             printf "{\"normalized\":0}\n" >"$tmp/target-counts.json"
             printf "{\"status\":\"disabled\"}\n" >"$tmp/uncover-stats.json"
-            ENABLE_PASSIVE_URLS=false ENABLE_TLSX=false ENABLE_CDNCHECK=false ENABLE_ALTERX=false ENABLE_CONTENT_AUDIT=false ENABLE_SECONDARY_CRAWL=false /opt/scanner/run-intelligence.sh "$tmp" fast
+            ENABLE_PASSIVE_URLS=false ENABLE_TLSX=false ENABLE_CDNCHECK=false ENABLE_ALTERX=false ENABLE_SECONDARY_CRAWL=false ENABLE_SOURCEMAP_V2=false ENABLE_FFUF_V2=false ENABLE_CONTENT_AUDIT=false /opt/scanner/run-intelligence.sh "$tmp" fast
             NUCLEI_TEMPLATE_MIN_COUNT=0 /opt/scanner/run-nuclei-v2.sh "$tmp" fast
             python3 /opt/scanner/enhance_summary.py "$tmp"
             python3 /opt/scanner/render_report.py "$tmp"
