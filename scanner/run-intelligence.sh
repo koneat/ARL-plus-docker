@@ -36,30 +36,60 @@ line_count() {
   grep -cve '^[[:space:]]*$' "$path" 2>/dev/null || true
 }
 
+merge_unique() {
+  local output="$1"
+  shift
+  {
+    local path
+    for path in "$@"; do
+      [[ -f "$path" ]] && cat "$path"
+    done
+  } | sed '/^[[:space:]]*$/d' | awk '!seen[$0]++' >"$output"
+}
+
+merge_unique_limit() {
+  local output="$1"
+  local limit="$2"
+  shift 2
+  local temporary="${output}.all.$$"
+  merge_unique "$temporary" "$@"
+  head -n "$limit" "$temporary" >"$output"
+  rm -f "$temporary"
+}
+
 case "$MODE" in
   fast)
     ENABLE_ALTERX_MODE="false"
     ENABLE_SECONDARY_CRAWL_MODE="false"
+    ENABLE_FFUF_V2_MODE="false"
     PASSIVE_URL_LIMIT_MODE=2000
     ALTERX_LIMIT_MODE=0
     CONTENT_AUDIT_LIMIT_MODE=100
     V2_SCAN_URL_LIMIT_MODE=8000
+    FFUF_V2_MAX_TARGETS_MODE=0
+    SOURCEMAP_V2_LIMIT_MODE=1000
     ;;
   standard)
     ENABLE_ALTERX_MODE="true"
     ENABLE_SECONDARY_CRAWL_MODE="true"
+    ENABLE_FFUF_V2_MODE="true"
     PASSIVE_URL_LIMIT_MODE=10000
     ALTERX_LIMIT_MODE=3000
     CONTENT_AUDIT_LIMIT_MODE=500
     V2_SCAN_URL_LIMIT_MODE=30000
+    FFUF_V2_MAX_TARGETS_MODE=100
+    SOURCEMAP_V2_LIMIT_MODE=5000
     ;;
   deep)
     ENABLE_ALTERX_MODE="true"
     ENABLE_SECONDARY_CRAWL_MODE="true"
+    ENABLE_FFUF_V2_MODE="true"
     PASSIVE_URL_LIMIT_MODE=30000
     ALTERX_LIMIT_MODE=10000
     CONTENT_AUDIT_LIMIT_MODE=1500
     V2_SCAN_URL_LIMIT_MODE=75000
+    FFUF_V2_MAX_TARGETS_MODE=300
+    SOURCEMAP_V2_LIMIT_MODE=15000
     ;;
   *)
     echo "unsupported mode: ${MODE}" >&2
@@ -73,18 +103,24 @@ ENABLE_CDNCHECK_EFFECTIVE="${ENABLE_CDNCHECK:-true}"
 ENABLE_ALTERX_EFFECTIVE="${ENABLE_ALTERX:-$ENABLE_ALTERX_MODE}"
 ENABLE_CONTENT_AUDIT_EFFECTIVE="${ENABLE_CONTENT_AUDIT:-true}"
 ENABLE_SECONDARY_CRAWL_EFFECTIVE="${ENABLE_SECONDARY_CRAWL:-$ENABLE_SECONDARY_CRAWL_MODE}"
+ENABLE_FFUF_V2_EFFECTIVE="${ENABLE_FFUF_V2:-$ENABLE_FFUF_V2_MODE}"
+ENABLE_SOURCEMAP_V2_EFFECTIVE="${ENABLE_SOURCEMAP_V2:-true}"
 PASSIVE_URL_LIMIT="${PASSIVE_URL_LIMIT:-$PASSIVE_URL_LIMIT_MODE}"
 ALTERX_LIMIT="${ALTERX_LIMIT:-$ALTERX_LIMIT_MODE}"
 CONTENT_AUDIT_LIMIT="${CONTENT_AUDIT_LIMIT:-$CONTENT_AUDIT_LIMIT_MODE}"
 V2_SCAN_URL_LIMIT="${V2_SCAN_URL_LIMIT:-$V2_SCAN_URL_LIMIT_MODE}"
+FFUF_V2_MAX_TARGETS="${FFUF_V2_MAX_TARGETS:-$FFUF_V2_MAX_TARGETS_MODE}"
+SOURCEMAP_V2_LIMIT="${SOURCEMAP_V2_LIMIT:-$SOURCEMAP_V2_LIMIT_MODE}"
 
-mkdir -p "$OUT"
+mkdir -p "$OUT" "$OUT/ffuf"
 for file in \
   urlfinder.jsonl urlfinder.txt gau.txt passive-urls.raw.txt passive-probe-targets.txt \
   passive-httpx.jsonl passive-live-urls.txt alterx.txt alterx.scoped.txt alterx.resolved.jsonl \
   tls-targets.txt tlsx.jsonl tls-san-domains.txt tls-findings.jsonl cdncheck.jsonl \
   enriched-domains.txt enriched-dnsx.jsonl enriched-httpx.jsonl enriched-live-urls.txt \
-  katana.enriched.txt content-audit.jsonl content-endpoints.txt; do
+  katana.enriched.txt content-audit.jsonl content-endpoints.txt \
+  sourcemap-v2-candidates.txt sourcemaps.v2.jsonl sourcemaps.v2.urls.txt \
+  ffuf-v2-bases.txt ffuf-v2-hits.txt; do
   : >"$OUT/$file"
 done
 
@@ -117,21 +153,26 @@ passive_urls_stage() {
       <"$OUT/domains.txt" 2>"$OUT/gau.log" || true
   fi
 
-  cat "$OUT/urlfinder.txt" "$OUT/gau.txt" 2>/dev/null | \
-    sed '/^[[:space:]]*$/d' | awk '!seen[$0]++' | head -n "$PASSIVE_URL_LIMIT" >"$OUT/passive-urls.raw.txt"
+  merge_unique_limit "$OUT/passive-urls.raw.txt" "$PASSIVE_URL_LIMIT" "$OUT/urlfinder.txt" "$OUT/gau.txt"
 }
 
 alterx_stage() {
   enabled "$ENABLE_ALTERX_EFFECTIVE" || return 0
   (( ALTERX_LIMIT > 0 )) || return 0
   [[ -s "$OUT/domains.all.txt" ]] || return 0
-  alterx \
-    -list "$OUT/domains.all.txt" \
-    -enrich \
-    -limit "$ALTERX_LIMIT" \
-    -silent \
-    -output "$OUT/alterx.txt" \
-    2>"$OUT/alterx.log"
+
+  local args=(
+    -list "$OUT/domains.all.txt"
+    -enrich
+    -limit "$ALTERX_LIMIT"
+    -silent
+    -output "$OUT/alterx.txt"
+  )
+  if enabled "${ALTERX_CURATED_WORDS:-true}" && [[ -s /opt/scanner/wordlists/subdomain-environments.txt ]]; then
+    args+=(-payload "word=/opt/scanner/wordlists/subdomain-environments.txt")
+  fi
+  alterx "${args[@]}" 2>"$OUT/alterx.log"
+
   python3 /opt/scanner/asset_intelligence.py domains \
     "$OUT/domains.txt" "$OUT/alterx.scoped.txt" "$OUT/alterx.txt" \
     --rejected "$OUT/alterx.rejected.txt"
@@ -145,7 +186,7 @@ alterx_stage() {
 
 tlsx_stage() {
   [[ -s "$OUT/domains.all.txt" || -s "$OUT/open-services.txt" ]] || return 0
-  cat "$OUT/domains.all.txt" "$OUT/open-services.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/tls-targets.txt"
+  merge_unique "$OUT/tls-targets.txt" "$OUT/domains.all.txt" "$OUT/open-services.txt"
   [[ -s "$OUT/tls-targets.txt" ]] || return 0
   tlsx \
     -list "$OUT/tls-targets.txt" \
@@ -160,7 +201,7 @@ tlsx_stage() {
 }
 
 cdncheck_stage() {
-  cat "$OUT/domains.all.txt" "$OUT/ips.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/cdncheck-targets.txt"
+  merge_unique "$OUT/cdncheck-targets.txt" "$OUT/domains.all.txt" "$OUT/ips.txt"
   [[ -s "$OUT/cdncheck-targets.txt" ]] || return 0
   cdncheck \
     -input "$OUT/cdncheck-targets.txt" \
@@ -193,7 +234,7 @@ enriched_domains_stage() {
     -l "$OUT/enriched-domains.txt" \
     -silent -json \
     -status-code -title -tech-detect -web-server -ip -cname -cdn -location \
-    -follow-redirects \
+    -follow-host-redirects \
     -threads "${HTTPX_ENRICH_THREADS:-40}" \
     -rate-limit "${HTTPX_RATE_LIMIT:-150}" \
     -timeout 10 -retries 1 \
@@ -201,41 +242,47 @@ enriched_domains_stage() {
 
   jq -r '.url // .input // empty' "$OUT/enriched-httpx.jsonl" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/enriched-live-urls.txt" || true
 
-  cat "$OUT/domains.all.txt" "$OUT/enriched-domains.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/domains.all.txt.tmp"
+  merge_unique "$OUT/domains.all.txt.tmp" "$OUT/domains.all.txt" "$OUT/enriched-domains.txt"
   mv "$OUT/domains.all.txt.tmp" "$OUT/domains.all.txt"
-  cat "$OUT/live-urls.txt" "$OUT/enriched-live-urls.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/live-urls.txt.tmp"
+  merge_unique "$OUT/live-urls.txt.tmp" "$OUT/live-urls.txt" "$OUT/enriched-live-urls.txt"
   mv "$OUT/live-urls.txt.tmp" "$OUT/live-urls.txt"
-  cat "$OUT/httpx.jsonl" "$OUT/enriched-httpx.jsonl" 2>/dev/null >"$OUT/httpx.jsonl.tmp"
+  cat "$OUT/httpx.jsonl" "$OUT/enriched-httpx.jsonl" 2>/dev/null >"$OUT/httpx.jsonl.tmp" || true
   mv "$OUT/httpx.jsonl.tmp" "$OUT/httpx.jsonl"
 }
 
-passive_probe_stage() {
+prepare_url_intelligence() {
   python3 /opt/scanner/asset_intelligence.py urls \
     "$OUT/domains.txt" "$OUT" \
-    "$OUT/live-urls.txt" "$OUT/katana.txt" "$OUT/passive-urls.raw.txt"
+    "$OUT/live-urls.txt" "$OUT/katana.txt" "$OUT/katana.enriched.txt" \
+    "$OUT/passive-live-urls.txt" "$OUT/passive-urls.raw.txt" \
+    "$OUT/ffuf-v2-hits.txt" "$OUT/sourcemaps.v2.urls.txt" "$OUT/content-endpoints.txt"
+}
 
-  cat "$OUT/urls-priority.txt" "$OUT/urls-intelligence-all.txt" 2>/dev/null | \
-    awk '!seen[$0]++' | head -n "$PASSIVE_URL_LIMIT" >"$OUT/passive-probe-targets.txt"
+passive_probe_stage() {
+  prepare_url_intelligence
+  merge_unique_limit "$OUT/passive-probe-targets.txt" "$PASSIVE_URL_LIMIT" \
+    "$OUT/urls-priority.txt" "$OUT/urls-intelligence-all.txt"
   [[ -s "$OUT/passive-probe-targets.txt" ]] || return 0
 
   httpx \
     -l "$OUT/passive-probe-targets.txt" \
     -silent -json \
     -status-code -title -tech-detect -web-server -ip -cname -cdn -location \
-    -follow-redirects \
+    -follow-host-redirects \
     -threads "${HTTPX_PASSIVE_THREADS:-50}" \
     -rate-limit "${HTTPX_RATE_LIMIT:-150}" \
     -timeout 10 -retries 1 \
     -o "$OUT/passive-httpx.jsonl"
   jq -r 'select((.status_code // 0) > 0) | .url // .input // empty' "$OUT/passive-httpx.jsonl" 2>/dev/null | \
     sed '/^[[:space:]]*$/d' | sort -u >"$OUT/passive-live-urls.txt" || true
-  cat "$OUT/live-urls.txt" "$OUT/passive-live-urls.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/live-urls.txt.tmp"
+  merge_unique "$OUT/live-urls.txt.tmp" "$OUT/live-urls.txt" "$OUT/passive-live-urls.txt"
   mv "$OUT/live-urls.txt.tmp" "$OUT/live-urls.txt"
 }
 
 secondary_crawl_stage() {
   enabled "$ENABLE_SECONDARY_CRAWL_EFFECTIVE" || return 0
-  cat "$OUT/enriched-live-urls.txt" "$OUT/passive-live-urls.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u | head -n "${SECONDARY_CRAWL_TARGET_LIMIT:-500}" >"$OUT/secondary-crawl-targets.txt"
+  merge_unique_limit "$OUT/secondary-crawl-targets.txt" "${SECONDARY_CRAWL_TARGET_LIMIT:-500}" \
+    "$OUT/enriched-live-urls.txt" "$OUT/passive-live-urls.txt"
   [[ -s "$OUT/secondary-crawl-targets.txt" ]] || return 0
   local depth=2
   [[ "$MODE" == "deep" ]] && depth=4
@@ -250,15 +297,109 @@ secondary_crawl_stage() {
     -o "$OUT/katana.enriched.txt"
 }
 
+sourcemap_v2_stage() {
+  enabled "$ENABLE_SOURCEMAP_V2_EFFECTIVE" || return 0
+  prepare_url_intelligence
+  python3 - "$OUT/urls-js.txt" "$OUT/sourcemap-v2-candidates.txt" "$SOURCEMAP_V2_LIMIT" <<'PY'
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+source = Path(sys.argv[1])
+output = Path(sys.argv[2])
+limit = int(sys.argv[3])
+seen = set()
+if source.is_file():
+    for raw in source.read_text(encoding="utf-8", errors="ignore").splitlines():
+        value = raw.strip()
+        if not value:
+            continue
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            continue
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        lower = parsed.path.lower()
+        if lower.endswith((".js", ".mjs")):
+            seen.add(urlunsplit((parsed.scheme, parsed.netloc, parsed.path + ".map", "", "")))
+        if len(seen) >= limit:
+            break
+output.write_text("".join(f"{item}\n" for item in sorted(seen)), encoding="utf-8")
+PY
+  [[ -s "$OUT/sourcemap-v2-candidates.txt" ]] || return 0
+  httpx \
+    -l "$OUT/sourcemap-v2-candidates.txt" \
+    -silent -json \
+    -match-code 200 \
+    -match-string '"sources"' \
+    -content-type -content-length \
+    -threads 30 -rate-limit "${SOURCEMAP_V2_RATE_LIMIT:-60}" \
+    -timeout 10 -retries 1 \
+    -o "$OUT/sourcemaps.v2.jsonl"
+  jq -r '.url // .input // empty' "$OUT/sourcemaps.v2.jsonl" 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$OUT/sourcemaps.v2.urls.txt" || true
+  {
+    [[ -f "$OUT/sourcemaps.jsonl" ]] && cat "$OUT/sourcemaps.jsonl"
+    cat "$OUT/sourcemaps.v2.jsonl"
+  } | awk '!seen[$0]++' >"$OUT/sourcemaps.jsonl.tmp"
+  mv "$OUT/sourcemaps.jsonl.tmp" "$OUT/sourcemaps.jsonl"
+}
+
+ffuf_v2_stage() {
+  enabled "$ENABLE_FFUF_V2_EFFECTIVE" || return 0
+  (( FFUF_V2_MAX_TARGETS > 0 )) || return 0
+  python3 - "$OUT/enriched-live-urls.txt" "$OUT/passive-live-urls.txt" "$OUT/ffuf-v2-bases.txt" <<'PY'
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+seen = set()
+for source_name in sys.argv[1:-1]:
+    source = Path(source_name)
+    if not source.is_file():
+        continue
+    for raw in source.read_text(encoding="utf-8", errors="ignore").splitlines():
+        value = raw.strip()
+        if not value:
+            continue
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            continue
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            seen.add(f"{parsed.scheme}://{parsed.netloc}")
+Path(sys.argv[-1]).write_text("".join(f"{item}\n" for item in sorted(seen)), encoding="utf-8")
+PY
+  [[ -s "$OUT/ffuf-v2-bases.txt" ]] || return 0
+  local count=0
+  while IFS= read -r base; do
+    [[ -n "$base" ]] || continue
+    count=$((count + 1))
+    (( count <= FFUF_V2_MAX_TARGETS )) || break
+    local name
+    name="$(printf '%s' "$base" | sha256sum | cut -d' ' -f1)"
+    ffuf \
+      -u "${base%/}/FUZZ" \
+      -w /opt/scanner/wordlists/high-value-paths.txt \
+      -ac \
+      -mc 200,204,301,302,307,401,403,405,500 \
+      -rate "${FFUF_V2_RATE:-${FFUF_RATE:-50}}" \
+      -t 20 -timeout 10 -maxtime "${FFUF_V2_MAXTIME:-180}" \
+      -of json -o "$OUT/ffuf/v2-${name}.json" -s || true
+  done <"$OUT/ffuf-v2-bases.txt"
+
+  find "$OUT/ffuf" -maxdepth 1 -type f -name 'v2-*.json' -print0 2>/dev/null | \
+    xargs -0 -r jq -r '.results[]?.url // empty' 2>/dev/null | \
+    sed '/^[[:space:]]*$/d' | sort -u >"$OUT/ffuf-v2-hits.txt" || true
+}
+
 content_audit_stage() {
   enabled "$ENABLE_CONTENT_AUDIT_EFFECTIVE" || return 0
-  python3 /opt/scanner/asset_intelligence.py urls \
-    "$OUT/domains.txt" "$OUT" \
-    "$OUT/live-urls.txt" "$OUT/katana.txt" "$OUT/katana.enriched.txt" \
-    "$OUT/passive-live-urls.txt" "$OUT/passive-urls.raw.txt"
+  prepare_url_intelligence
   python3 /opt/scanner/content_audit.py \
     "$OUT" \
     "$OUT/urls-sensitive.txt" "$OUT/urls-js.txt" "$OUT/urls-api.txt" "$OUT/urls-priority.txt" \
+    "$OUT/ffuf-v2-hits.txt" "$OUT/sourcemaps.v2.urls.txt" \
     --limit "$CONTENT_AUDIT_LIMIT" \
     --workers "${CONTENT_AUDIT_WORKERS:-10}" \
     --timeout "${CONTENT_AUDIT_TIMEOUT:-10}" \
@@ -266,21 +407,18 @@ content_audit_stage() {
 }
 
 finalize_intelligence_stage() {
-  python3 /opt/scanner/asset_intelligence.py urls \
-    "$OUT/domains.txt" "$OUT" \
-    "$OUT/live-urls.txt" "$OUT/katana.txt" "$OUT/katana.enriched.txt" \
-    "$OUT/passive-live-urls.txt" "$OUT/passive-urls.raw.txt" "$OUT/content-endpoints.txt"
-
-  cat \
+  prepare_url_intelligence
+  merge_unique "$OUT/scan-urls.all.txt" \
     "$OUT/urls-priority.txt" \
     "$OUT/urls-api.txt" \
     "$OUT/urls-sensitive.txt" \
+    "$OUT/ffuf-v2-hits.txt" \
+    "$OUT/sourcemaps.v2.urls.txt" \
     "$OUT/content-endpoints.txt" \
     "$OUT/passive-live-urls.txt" \
     "$OUT/live-urls.txt" \
     "$OUT/katana.txt" \
-    "$OUT/katana.enriched.txt" 2>/dev/null | \
-    sed '/^[[:space:]]*$/d' | awk '!seen[$0]++' >"$OUT/scan-urls.all.txt"
+    "$OUT/katana.enriched.txt"
   head -n "$V2_SCAN_URL_LIMIT" "$OUT/scan-urls.all.txt" >"$OUT/scan-urls.txt"
 
   python3 - "$OUT" <<'PY'
@@ -310,6 +448,8 @@ stats = {
     "parameterized_urls": count("urls-params.txt"),
     "sensitive_urls": count("urls-sensitive.txt"),
     "javascript_urls": count("urls-js.txt"),
+    "sourcemap_v2_hits": count("sourcemaps.v2.urls.txt"),
+    "ffuf_v2_hits": count("ffuf-v2-hits.txt"),
     "content_endpoints": count("content-endpoints.txt"),
     "final_scan_urls": count("scan-urls.txt"),
 }
@@ -321,6 +461,8 @@ PY
     echo "passive_url_limit=${PASSIVE_URL_LIMIT}"
     echo "alterx_limit=${ALTERX_LIMIT}"
     echo "content_audit_limit=${CONTENT_AUDIT_LIMIT}"
+    echo "ffuf_v2_max_targets=${FFUF_V2_MAX_TARGETS}"
+    echo "sourcemap_v2_limit=${SOURCEMAP_V2_LIMIT}"
     echo "v2_scan_url_limit=${V2_SCAN_URL_LIMIT}"
   } >>"$OUT/manifest.txt"
 }
@@ -343,6 +485,12 @@ if enabled "$ENABLE_PASSIVE_URLS_EFFECTIVE"; then
 fi
 if enabled "$ENABLE_SECONDARY_CRAWL_EFFECTIVE"; then
   stage "新增资产二次爬取" secondary_crawl_stage
+fi
+if enabled "$ENABLE_SOURCEMAP_V2_EFFECTIVE"; then
+  stage "新增与历史 JavaScript 的 Sourcemap 二次验证" sourcemap_v2_stage
+fi
+if enabled "$ENABLE_FFUF_V2_EFFECTIVE"; then
+  stage "新增资产高价值路径二次枚举" ffuf_v2_stage
 fi
 if enabled "$ENABLE_CONTENT_AUDIT_EFFECTIVE"; then
   stage "内容级文件泄露验证与 JavaScript 接口挖掘" content_audit_stage
