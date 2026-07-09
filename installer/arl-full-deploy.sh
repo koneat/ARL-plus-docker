@@ -3,7 +3,6 @@
 set -Eeuo pipefail
 umask 077
 
-
 # 从 Git 仓库执行时，先复制部署引擎到临时目录再继续。
 # 这样后续 git pull 不会在运行中替换当前脚本或已加载模块。
 if [[ "${ARL_INSTALLER_REEXEC:-false}" != "true" ]]; then
@@ -174,17 +173,23 @@ ok()   { printf '[OK] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
 die()  { printf '[FATAL] %s\n' "$*" >&2; exit 1; }
 
-
 for module in \
   00-core.sh \
   10-repository.sh \
-  20-config.sh \
+  20-config-yaml.sh \
+  21-secrets-env.sh \
+  22-compose-file.sh \
   30-deploy.sh \
   40-reports.sh \
-  50-vless-core.sh \
-  60-proxy-services.sh \
-  70-worker-tools.sh \
-  80-enhancements.sh; do
+  50-vless-utils.sh \
+  51-vless-config.sh \
+  52-vless-install.sh \
+  60-arl-proxy.sh \
+  61-chaitin-xray.sh \
+  70-afrog-rad.sh \
+  71-worker-support.sh \
+  80-enhancements.sh \
+  90-main.sh; do
   # shellcheck disable=SC1090
   source "${INSTALLER_DIR}/lib/${module}"
 done
