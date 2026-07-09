@@ -1,0 +1,13 @@
+services:
+  web:
+    build:
+      context: ./proxy-runtime
+      args:
+        ARL_BASE_IMAGE: ${ARL_BASE_IMAGE:-ki9mu/arl-ki9mu:v3.0.1}
+    image: ${ARL_PROXY_RUNTIME_IMAGE:-arl-proxy-runtime:v3.0.1-2026.07}
+  scheduler:
+    build:
+      context: ./proxy-runtime
+      args:
+        ARL_BASE_IMAGE: ${ARL_BASE_IMAGE:-ki9mu/arl-ki9mu:v3.0.1}
+    image: ${ARL_PROXY_RUNTIME_IMAGE:-arl-proxy-runtime:v3.0.1-2026.07}
