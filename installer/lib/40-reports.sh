@@ -22,8 +22,10 @@ from pathlib import Path
 
 root = Path(__import__("os").environ.get("ARL_REPORT_ROOT", "/var/lib/arl-reports"))
 afrog = root / "afrog"
+xray = root / "xray"
 root.mkdir(parents=True, exist_ok=True)
 afrog.mkdir(parents=True, exist_ok=True)
+xray.mkdir(parents=True, exist_ok=True)
 
 reports = sorted(
     (p for p in afrog.glob("*.html") if p.name not in {"index.html", "latest.html"}),
@@ -53,9 +55,13 @@ afrog_index = f"""<!doctype html>
 
 root_index = """<!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>ARL 扫描报告</title></head>
+<head>
+<base href="/report/">
+<meta charset="utf-8"><title>ARL 扫描报告</title>
+</head>
 <body>
 <h1>ARL 扫描报告</h1>
+<p>主入口：<strong>/xray/index.html</strong></p>
 <ul>
 <li><a href="xray/proxy.html">长亭 xray 实时报告</a></li>
 <li><a href="afrog/index.html">Afrog 历史报告</a></li>
@@ -64,6 +70,7 @@ root_index = """<!doctype html>
 </html>
 """
 (root / "index.html").write_text(root_index, encoding="utf-8")
+(xray / "index.html").write_text(root_index, encoding="utf-8")
 PY
   chmod 0755 /usr/local/bin/arl-report-index
   ARL_REPORT_ROOT="$REPORT_ROOT" /usr/local/bin/arl-report-index
@@ -77,5 +84,5 @@ PY
     find "$REPORT_ROOT" -mindepth 1 -type d -exec chmod 0750 {} +
     find "$REPORT_ROOT" -type f -exec chmod 0640 {} +
   fi
-  ok "报告目录已准备：$REPORT_ROOT"
+  ok "报告目录已准备：$REPORT_ROOT；主入口：https://服务器IP:5003/xray/index.html"
 }
