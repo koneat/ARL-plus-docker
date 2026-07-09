@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_FINAL_INSTALLER_VERSION=2026.07.09-auth-audited.1
+# ARL_FINAL_INSTALLER_VERSION=2026.07.09-auth-audited.2
 set -Eeuo pipefail
 umask 077
 
@@ -23,7 +23,7 @@ cleanup() {
   if [[ -n "$TMP_REPO" && -d "$TMP_REPO" ]]; then
     rm -rf -- "$TMP_REPO"
   fi
-  exit "$status"
+  return "$status"
 }
 trap cleanup EXIT
 
@@ -56,10 +56,6 @@ apt_install_bootstrap_tools() {
     -o Binary::apt-get::DPkg::Lock::Timeout=300 \
     -o Acquire::Retries=5 \
     install -y ca-certificates curl git python3 util-linux jq
-}
-
-shell_quote() {
-  printf '%q' "$1"
 }
 
 read_env_value() {
@@ -186,16 +182,16 @@ EOF
 
   chmod 600 "$ENV_FILE"
 
-  # 仓库和安装位置。
   set_env_value "$ENV_FILE" REPO_URL "$REPO_URL"
   set_env_value "$ENV_FILE" REPO_BRANCH "$REPO_BRANCH"
   set_env_value "$ENV_FILE" ARL_DIR "$ARL_DIR"
 
-  # 认证边界：5013 只能绑定回环；5014 独立容器强制 Token。
+  # 5013 只能绑定回环地址，免认证不会暴露到外网。
   set_env_value "$ENV_FILE" MCP_LOCAL_BIND_IP '127.0.0.1'
   set_env_value "$ENV_FILE" MCP_LOCAL_PORT '5013'
   set_env_value "$ENV_FILE" MCP_ALLOW_LOCAL_UNAUTHENTICATED 'true'
 
+  # 5014 使用独立 MCP 容器，Compose 中无条件写死强制 Token。
   local external_bind
   external_bind="$(read_env_value "$ENV_FILE" MCP_EXTERNAL_BIND_IP 2>/dev/null || true)"
   case "$external_bind" in
@@ -206,10 +202,9 @@ EOF
   set_env_value "$ENV_FILE" MCP_EXTERNAL_BIND_IP "$external_bind"
   set_env_value "$ENV_FILE" MCP_EXTERNAL_PORT '5014'
 
-  # 用户需要 MCP 可操作 ARL；外部入口仍然强制 Token。
+  # 允许 MCP 提交、停止和重启 ARL 任务；认证边界不受此项影响。
   set_env_value "$ENV_FILE" MCP_READ_ONLY 'false'
 
-  # 默认保留防火墙，不因安装器自动扩大公网暴露面。
   local disable_ufw
   disable_ufw="$(read_env_value "$ENV_FILE" DISABLE_UFW 2>/dev/null || true)"
   set_env_value "$ENV_FILE" DISABLE_UFW "${disable_ufw:-false}"
@@ -220,7 +215,6 @@ EOF
   set_env_value "$ENV_FILE" ARL_ENHANCED_WORKER_IMAGE 'arl-enhanced-worker:v3.0.1-2026.07'
   set_env_value "$ENV_FILE" ARL_PROXY_RUNTIME_IMAGE 'arl-proxy-runtime:v3.0.1-2026.07'
 
-  # 完整扫描能力默认开启。
   set_env_value "$ENV_FILE" ENABLE_SMART_WILDCARD 'true'
   set_env_value "$ENV_FILE" ENABLE_SCANNER_STACK 'true'
   set_env_value "$ENV_FILE" BUILD_SCANNER_IMAGE 'true'
@@ -247,7 +241,7 @@ EOF
   if [[ "$external_bind" == '0.0.0.0' || "$external_bind" == '::' ]]; then
     warn "外部 MCP 将直接监听所有网卡 ${external_bind}:5014；Token 仍强制，但更推荐 127.0.0.1 配合反向代理。"
   else
-    ok '认证拓扑已固定：127.0.0.1:5013 本机免 Token；127.0.0.1:5014 外部反代入口强制 Token'
+    ok "认证拓扑已固定：127.0.0.1:5013 本机免 Token；${external_bind}:5014 强制 Token"
   fi
 }
 
@@ -276,10 +270,18 @@ audit_repository_auth_design() {
     die '认证审查失败：MCP 未返回 Bearer 认证挑战'
   grep -q 'authorization.lower().startswith("bearer ")' "$server" ||
     die '认证审查失败：MCP 未解析 Authorization Bearer'
+  grep -q 'headers.get("x-mcp-token"' "$server" ||
+    die '认证审查失败：MCP 兼容 Token 请求头逻辑缺失'
   ok '仓库认证设计静态审查通过'
 }
 
 run_deployment() {
+  log '先执行完整安装器静态检查'
+  bash "$TMP_REPO/repo/installer/arl-full-deploy.sh" \
+    --env-file "$ENV_FILE" \
+    --check-only
+
+  log '静态检查通过，开始正式部署'
   bash "$TMP_REPO/repo/installer/arl-full-deploy.sh" --env-file "$ENV_FILE"
 }
 
@@ -305,30 +307,42 @@ container_env_value() {
 host_bind_ip() {
   local container="$1"
   local host_port="$2"
-  docker inspect -f '{{json .NetworkSettings.Ports}}' "$container" |
-    python3 - "$host_port" <<'PY'
+  local ports_json
+  ports_json="$(docker inspect -f '{{json .NetworkSettings.Ports}}' "$container")"
+  python3 - "$host_port" "$ports_json" <<'PY'
 import json
 import sys
-ports = json.load(sys.stdin)
+
+host_port = sys.argv[1]
+ports = json.loads(sys.argv[2])
 for binding in ports.get("5013/tcp") or []:
-    if str(binding.get("HostPort")) == sys.argv[1]:
+    if str(binding.get("HostPort")) == host_port:
         print(binding.get("HostIp") or "")
         break
 PY
 }
 
+mcp_test_host() {
+  local bind_ip="$1"
+  case "$bind_ip" in
+    '::'|'::1') printf '[::1]' ;;
+    '0.0.0.0') printf '127.0.0.1' ;;
+    *) printf '%s' "${bind_ip:-127.0.0.1}" ;;
+  esac
+}
+
 post_install_auth_audit() {
-  local local_url external_host external_url token
-  local local_code external_code external_auth_code
-  local local_flag external_flag local_bind external_bind
+  local local_url external_bind external_host external_url token wrong_token
+  local local_code external_code wrong_code external_auth_code
+  local local_flag external_flag local_bind actual_external_bind
+  local local_container_token external_container_token
 
   local_url='http://127.0.0.1:5013/mcp'
-  external_host="$(read_env_value "$ENV_FILE" MCP_EXTERNAL_BIND_IP 2>/dev/null || true)"
-  case "$external_host" in
-    '0.0.0.0'|'::'|'::1') external_host='127.0.0.1' ;;
-  esac
-  external_url="http://${external_host:-127.0.0.1}:5014/mcp"
+  external_bind="$(read_env_value "$ENV_FILE" MCP_EXTERNAL_BIND_IP 2>/dev/null || true)"
+  external_host="$(mcp_test_host "$external_bind")"
+  external_url="http://${external_host}:5014/mcp"
   token="$(credential_value MCP_TOKEN || true)"
+  wrong_token='definitely-wrong-mcp-token-for-auth-audit'
 
   [[ ${#token} -ge 32 ]] || die '认证审查失败：部署后的 MCP_TOKEN 不存在或少于 32 字符'
 
@@ -337,12 +351,17 @@ post_install_auth_audit() {
   [[ "$local_flag" == 'true' ]] || die "认证审查失败：arl_mcp_local 免认证标志为 ${local_flag:-empty}"
   [[ "$external_flag" == 'false' ]] || die "认证审查失败：arl_mcp 外部入口免认证标志为 ${external_flag:-empty}"
 
+  local_container_token="$(container_env_value arl_mcp_local MCP_TOKEN)"
+  external_container_token="$(container_env_value arl_mcp MCP_TOKEN)"
+  [[ "$local_container_token" == "$token" ]] || die '认证审查失败：本机 MCP 容器 Token 与凭据文件不一致'
+  [[ "$external_container_token" == "$token" ]] || die '认证审查失败：外部 MCP 容器 Token 与凭据文件不一致'
+
   local_bind="$(host_bind_ip arl_mcp_local 5013)"
   [[ "$local_bind" == '127.0.0.1' || "$local_bind" == '::1' ]] ||
     die "认证审查失败：5013 绑定到 ${local_bind:-unknown}，必须只绑定回环地址"
 
-  external_bind="$(host_bind_ip arl_mcp 5014)"
-  [[ -n "$external_bind" ]] || die '认证审查失败：没有找到外部 MCP 5014 端口映射'
+  actual_external_bind="$(host_bind_ip arl_mcp 5014)"
+  [[ -n "$actual_external_bind" ]] || die '认证审查失败：没有找到外部 MCP 5014 端口映射'
 
   local_code="$(http_code "$local_url")"
   [[ "$local_code" != '401' && "$local_code" != '403' ]] ||
@@ -352,31 +371,45 @@ post_install_auth_audit() {
   [[ "$external_code" == '401' ]] ||
     die "认证审查失败：外部 5014 无 Token 应返回 401，实际 HTTP ${external_code}"
 
+  wrong_code="$(http_code -H "Authorization: Bearer ${wrong_token}" "$external_url")"
+  [[ "$wrong_code" == '401' ]] ||
+    die "认证审查失败：外部 5014 错误 Token 应返回 401，实际 HTTP ${wrong_code}"
+
   external_auth_code="$(http_code -H "Authorization: Bearer ${token}" "$external_url")"
   [[ "$external_auth_code" != '401' && "$external_auth_code" != '403' ]] ||
     die "认证审查失败：外部 5014 使用正确 Token 仍被拒绝，HTTP ${external_auth_code}"
 
   local local_health external_health
   local_health="$(curl -fsS --connect-timeout 3 --max-time 10 http://127.0.0.1:5013/healthz)"
-  external_health="$(curl -fsS --connect-timeout 3 --max-time 10 "http://${external_host:-127.0.0.1}:5014/healthz")"
-  echo "$local_health" | jq -e '.status == "ok" and .auth_required == false' >/dev/null ||
-    die '认证审查失败：本机 healthz 的 auth_required 不是 false'
-  echo "$external_health" | jq -e '.status == "ok" and .auth_required == true' >/dev/null ||
-    die '认证审查失败：外部 healthz 的 auth_required 不是 true'
+  external_health="$(curl -fsS --connect-timeout 3 --max-time 10 "http://${external_host}:5014/healthz")"
+  echo "$local_health" | jq -e '
+    .status == "ok" and
+    .auth_required == false and
+    ((keys - ["auth_required", "read_only", "service", "status"]) | length == 0)
+  ' >/dev/null || die '认证审查失败：本机 healthz 内容或认证状态异常'
+  echo "$external_health" | jq -e '
+    .status == "ok" and
+    .auth_required == true and
+    ((keys - ["auth_required", "read_only", "service", "status"]) | length == 0)
+  ' >/dev/null || die '认证审查失败：外部 healthz 内容或认证状态异常'
 
-  ok "认证实测通过：5013 无 Token HTTP ${local_code}；5014 无 Token HTTP 401；5014 正确 Token HTTP ${external_auth_code}"
-  ok "端口绑定通过：5013=${local_bind}；5014=${external_bind}"
+  ok "认证实测通过：5013 无 Token HTTP ${local_code}；5014 无 Token/错误 Token 均为 401；正确 Token HTTP ${external_auth_code}"
+  ok "端口绑定通过：5013=${local_bind}；5014=${actual_external_bind}"
 }
 
 print_result() {
   local credentials='/root/arl-deploy-credentials.txt'
+  local external_bind external_display
+  external_bind="$(read_env_value "$ENV_FILE" MCP_EXTERNAL_BIND_IP 2>/dev/null || true)"
+  external_display="$(mcp_test_host "$external_bind")"
+
   echo
   echo '================ ARL 最终安装完成 ================'
   echo "仓库：${ARL_DIR}"
   echo "私密配置：${ENV_FILE}"
   echo "凭据文件：${credentials}"
   echo 'MCP 本机：http://127.0.0.1:5013/mcp（免 Token，仅本机）'
-  echo 'MCP 外部：http://127.0.0.1:5014/mcp（强制 Bearer Token，推荐反向代理到此端口）'
+  echo "MCP 外部：http://${external_display}:5014/mcp（强制 Bearer Token）"
   echo '查看 Token：grep ^MCP_TOKEN= /root/arl-deploy-credentials.txt'
   echo "启动日志：${BOOTSTRAP_LOG}"
   echo '回滚 Worker：bash /root/ARL-plus-docker/scripts/rollback-enhanced-worker.sh'
@@ -409,4 +442,6 @@ main() {
   print_result
 }
 
-main "$@"
+if [[ "${ARL_FINAL_INSTALLER_LIBRARY_ONLY:-false}" != 'true' ]]; then
+  main "$@"
+fi
