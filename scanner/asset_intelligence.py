@@ -28,7 +28,10 @@ HIGH_KEYWORDS = {
     "wallet", "withdraw", "transfer", "settlement", "report", "metrics", "prometheus", "trace", "logs",
 }
 API_HINTS = {"api", "rest", "rpc", "graphql", "webhook", "callback", "openapi", "swagger", "api-docs"}
-SECRET_PARAM_HINTS = {"token", "key", "secret", "password", "passwd", "auth", "jwt", "session", "signature", "sign", "apikey", "api_key", "access_token", "refresh_token"}
+SECRET_PARAM_HINTS = {
+    "token", "key", "secret", "password", "passwd", "auth", "jwt", "session", "signature", "sign",
+    "apikey", "api_key", "access_token", "refresh_token",
+}
 
 
 def read_lines(paths: Iterable[Path]) -> Iterable[str]:
@@ -257,8 +260,9 @@ def cmd_tlsx(args: argparse.Namespace) -> int:
             continue
         if not isinstance(item, dict):
             continue
+
         values: list[str] = []
-        for key in ("subject_an", "subject_an_dns", "san", "dns_names"):
+        for key in ("subject_an", "domains", "subject_cn", "subject_an_dns", "san", "dns_names"):
             value = item.get(key)
             if isinstance(value, list):
                 values.extend(str(entry) for entry in value)
@@ -268,25 +272,41 @@ def cmd_tlsx(args: argparse.Namespace) -> int:
             host = normalize_host(value)
             if host and in_scope(host, roots):
                 sans.add(host)
+
         flags = {
-            name: bool(item.get(name) or item.get(name.replace("_", "-")))
-            for name in ("expired", "self_signed", "mismatched", "revoked", "untrusted", "wildcard_cert")
+            "expired": bool(item.get("expired")),
+            "self_signed": bool(item.get("self_signed") or item.get("self-signed")),
+            "mismatched": bool(item.get("mismatched")),
+            "revoked": bool(item.get("revoked")),
+            "untrusted": bool(item.get("untrusted")),
+            "wildcard_certificate": bool(
+                item.get("wildcard_certificate") or item.get("wildcard_cert") or item.get("wildcard-cert")
+            ),
         }
         if any(flags.values()):
             findings.append({
                 "host": item.get("host") or item.get("input") or item.get("ip"),
+                "ip": item.get("ip"),
                 "port": item.get("port"),
                 "tls_version": item.get("tls_version") or item.get("version"),
                 "cipher": item.get("cipher"),
+                "jarm_hash": item.get("jarm_hash"),
+                "not_before": item.get("not_before"),
+                "not_after": item.get("not_after"),
                 "flags": flags,
             })
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "tls-san-domains.txt").write_text("".join(f"{value}\n" for value in sorted(sans)), encoding="utf-8")
     (args.output_dir / "tls-findings.jsonl").write_text(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in findings), encoding="utf-8"
     )
     (args.output_dir / "tls-stats.json").write_text(
-        json.dumps({"san_domains": len(sans), "misconfigurations": len(findings), "invalid": invalid}, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(
+            {"san_domains": len(sans), "misconfigurations": len(findings), "invalid": invalid},
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n",
         encoding="utf-8",
     )
     return 0
