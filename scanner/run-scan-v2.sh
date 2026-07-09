@@ -40,18 +40,20 @@ sanitize_active_targets() {
 import json
 import sys
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 sys.path.insert(0, "/opt/scanner")
 from asset_intelligence import normalize_url, sanitize_query_pairs  # noqa: E402
-from urllib.parse import parse_qsl, urlsplit
 
 source = Path(sys.argv[1])
 output = Path(sys.argv[2])
 stats_path = Path(sys.argv[3])
+raw_lines = source.read_text(encoding="utf-8", errors="ignore").splitlines()
 seen = set()
+ordered = []
 invalid = 0
 redacted = 0
-for raw in source.read_text(encoding="utf-8", errors="ignore").splitlines():
+for raw in raw_lines:
     value = raw.strip()
     if not value:
         continue
@@ -65,11 +67,13 @@ for raw in source.read_text(encoding="utf-8", errors="ignore").splitlines():
     if not normalized:
         invalid += 1
         continue
-    seen.add(normalized)
-output.write_text("".join(f"{value}\n" for value in sorted(seen)), encoding="utf-8")
+    if normalized not in seen:
+        seen.add(normalized)
+        ordered.append(normalized)
+output.write_text("".join(f"{value}\n" for value in ordered), encoding="utf-8")
 stats_path.write_text(
     json.dumps(
-        {"input": len(source.read_text(encoding="utf-8", errors="ignore").splitlines()), "output": len(seen), "invalid": invalid, "redacted_query_values": redacted},
+        {"input": len(raw_lines), "output": len(ordered), "invalid": invalid, "redacted_query_values": redacted},
         ensure_ascii=False,
         indent=2,
     ) + "\n",
