@@ -57,9 +57,9 @@ jobs:
             XRAY_SERVICE_GROUP=arl-xray-ci \
             bash -c 'set -Eeuxo pipefail; umask 077; source "$XRAY_CONFIG_MODULE"; generate_xray_core_config'
 
-          stat -c '%A %a %U:%G %n' /tmp/xray-config-ci /tmp/xray-config-ci/config.json
-          test "$(stat -c '%a' /tmp/xray-config-ci)" = 750
-          test "$(stat -c '%a' /tmp/xray-config-ci/config.json)" = 640
-          test "$(stat -c '%U:%G' /tmp/xray-config-ci/config.json)" = root:arl-xray-ci
+          sudo stat -c '%A %a %U:%G %n' /tmp/xray-config-ci /tmp/xray-config-ci/config.json
+          test "$(sudo stat -c '%a' /tmp/xray-config-ci)" = 750
+          test "$(sudo stat -c '%a' /tmp/xray-config-ci/config.json)" = 640
+          test "$(sudo stat -c '%U:%G' /tmp/xray-config-ci/config.json)" = root:arl-xray-ci
           sudo -u arl-xray-ci test -r /tmp/xray-config-ci/config.json
           ! sudo -u nobody test -r /tmp/xray-config-ci/config.json
