@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import html
+import json
 import os
 from pathlib import Path
 
@@ -11,34 +12,82 @@ afrog = root / "afrog"
 root.mkdir(parents=True, exist_ok=True)
 afrog.mkdir(parents=True, exist_ok=True)
 
-reports = sorted(
-    (
-        path
-        for path in afrog.glob("*.html")
-        if path.name not in {"index.html", "latest.html"}
-    ),
+
+def esc(value):
+    return html.escape(str(value if value not in (None, "") else "-"))
+
+
+def read_status(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+status_files = sorted(
+    afrog.glob("*.status.json"),
     key=lambda path: path.stat().st_mtime,
     reverse=True,
 )
 
-items = [
-    '<li><a href="{}">{}</a></li>'.format(
-        html.escape(path.name), html.escape(path.name)
+rows = []
+for status_path in status_files:
+    status = read_status(status_path)
+    base_name = status_path.name[:-len(".status.json")]
+    html_path = afrog / (base_name + ".html")
+    json_path = afrog / (base_name + ".json")
+    xray = status.get("xray") if isinstance(status.get("xray"), dict) else {}
+
+    links = ['<a href="{}">状态 JSON</a>'.format(esc(status_path.name))]
+    if html_path.is_file() and html_path.stat().st_size > 0:
+        links.insert(0, '<a href="{}">Afrog HTML</a>'.format(esc(html_path.name)))
+    if json_path.is_file() and json_path.stat().st_size > 0:
+        links.append('<a href="{}">Afrog JSON</a>'.format(esc(json_path.name)))
+
+    rows.append(
+        "<tr>"
+        "<td>{}</td><td>{}</td><td>{}</td><td>{}</td>"
+        "<td>{}</td><td>{}</td><td>{}</td>"
+        "</tr>".format(
+            esc(status.get("task_id")),
+            esc(status.get("status")),
+            esc(status.get("target_count", 0)),
+            esc(status.get("findings_count", 0)),
+            esc(xray.get("status")),
+            esc(status.get("ended_at")),
+            " | ".join(links),
+        )
     )
-    for path in reports
-]
+
+if not rows:
+    rows.append('<tr><td colspan="7">目前还没有 Afrog 执行记录</td></tr>')
 
 (afrog / "index.html").write_text(
     """<!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>Afrog 扫描报告</title></head>
+<head>
+<meta charset="utf-8">
+<title>Afrog / Xray 执行记录</title>
+<style>
+body{{font-family:sans-serif;margin:24px;line-height:1.5}}
+table{{border-collapse:collapse;width:100%}}
+th,td{{border:1px solid #ddd;padding:8px;text-align:left;vertical-align:top}}
+th{{background:#f5f5f5}}
+code{{background:#f5f5f5;padding:2px 4px}}
+</style>
+</head>
 <body>
-<h1>Afrog 扫描报告</h1>
-<ul>{}</ul>
+<h1>Afrog / Xray 执行记录</h1>
+<p>状态会明确区分未执行、失败、执行零命中和执行有命中；不能把未执行解释成零漏洞。</p>
+<table>
+<thead><tr><th>ARL 任务</th><th>Afrog 状态</th><th>目标数</th><th>命中数</th><th>Xray 状态</th><th>结束时间</th><th>证据</th></tr></thead>
+<tbody>{}</tbody>
+</table>
 <p><a href="../">返回扫描报告首页</a></p>
 </body>
 </html>
-""".format("".join(items) if items else "<li>目前还没有 Afrog 报告</li>"),
+""".format("".join(rows)),
     encoding="utf-8",
 )
 
@@ -49,8 +98,8 @@ items = [
 <body>
 <h1>ARL 扫描报告</h1>
 <ul>
-<li><a href="xray/proxy.html">长亭 xray 实时报告</a></li>
-<li><a href="afrog/index.html">Afrog 历史报告</a></li>
+<li><a href="xray/proxy.html">长亭 Xray 实时报告</a></li>
+<li><a href="afrog/index.html">Afrog / Xray 任务执行记录与报告</a></li>
 </ul>
 </body>
 </html>
