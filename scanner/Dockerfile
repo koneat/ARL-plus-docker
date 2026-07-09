@@ -69,6 +69,10 @@ COPY \
   summarize.py \
   enhance_summary.py \
   render_report.py \
+  scanner_api.py \
+  run-nuclei-closed.sh \
+  finalize_quality.py \
+  patch_scanner_v2.py \
   /opt/scanner/
 COPY wordlists/ /opt/scanner/wordlists/
 COPY V2_VERSION /opt/scanner/V2_VERSION
@@ -76,6 +80,13 @@ COPY V2_VERSION /opt/scanner/V2_VERSION
 RUN sed -i 's/-follow-redirects/-follow-host-redirects/g' /opt/scanner/run-scan.sh && \
     sed -i 's/-field-scope rdn/-field-scope fqdn/g' /opt/scanner/run-scan.sh && \
     python3 -c "from pathlib import Path; p=Path('/opt/scanner/run-intelligence.sh'); s=p.read_text(); n='-field-scope rdn'; i=s.rfind(n); assert i >= 0; p.write_text(s[:i] + '-field-scope fqdn' + s[i+len(n):])" && \
+    mv /opt/scanner/run-nuclei-v2.sh /opt/scanner/run-nuclei-v2-real.sh && \
+    install -m 0755 /opt/scanner/run-nuclei-closed.sh /opt/scanner/run-nuclei-v2.sh && \
+    python3 /opt/scanner/patch_scanner_v2.py && \
+    python3 -m py_compile \
+      /opt/scanner/scanner_api.py \
+      /opt/scanner/finalize_quality.py \
+      /opt/scanner/patch_scanner_v2.py && \
     chmod +x \
       /opt/scanner/entrypoint.sh \
       /opt/scanner/run-scan.sh \
@@ -83,11 +94,14 @@ RUN sed -i 's/-follow-redirects/-follow-host-redirects/g' /opt/scanner/run-scan.
       /opt/scanner/run-scan-v2.sh \
       /opt/scanner/run-intelligence.sh \
       /opt/scanner/run-nuclei-v2.sh \
+      /opt/scanner/run-nuclei-v2-real.sh \
       /opt/scanner/run-afrog-v2.sh \
       /opt/scanner/sanitize_url_targets.py \
-      /opt/scanner/sanitize_result_artifacts.py && \
-    mkdir -p /work/results /root/.config /root/nuclei-templates /opt/pocs/nuclei /opt/pocs/afrog /run/secrets
+      /opt/scanner/sanitize_result_artifacts.py \
+      /opt/scanner/scanner_api.py && \
+    mkdir -p /work/results /work/input/api /root/.config /root/nuclei-templates /opt/pocs/nuclei /opt/pocs/afrog /run/secrets
 
 WORKDIR /work
+EXPOSE 8090
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/scanner/entrypoint.sh"]
 CMD ["sleep", "infinity"]
