@@ -41,8 +41,11 @@ jobs:
           docker compose config >/tmp/compose.yml
           grep -q '^  scanner-v2:' /tmp/compose.yml
           grep -q 'http://scanner-v2:8090' /tmp/compose.yml
-          grep -Fq './scan-results:/code/frontend/report/scanner:ro' docker-compose.yml
-          grep -q 'target: /code/frontend/report/scanner' /tmp/compose.yml
+          grep -Fq '${ARL_REPORT_ROOT:-/var/lib/arl-reports}/scanner:/work/results' docker-compose.yml
+          ! grep -Fq './scan-results:/code/frontend/report/scanner:ro' docker-compose.yml
+          grep -q 'source: /var/lib/arl-reports/scanner' /tmp/compose.yml
+          grep -q 'target: /work/results' /tmp/compose.yml
+          grep -q 'target: /code/frontend/report' /tmp/compose.yml
           grep -q 'scanner_api.py' scanner/Dockerfile
           grep -q 'launcher.py' mcp/Dockerfile
 
