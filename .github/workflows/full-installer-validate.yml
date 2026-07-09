@@ -99,17 +99,23 @@ jobs:
           ENV
           bash installer/arl-full-deploy.sh --env-file /tmp/arl-vless.env --check-only
 
-      - name: Verify Xray dedicated account and config permissions
+      - name: Verify Xray service unit wiring
         shell: bash
         run: |
           set -Eeuo pipefail
           ! grep -q '^User=nobody$' installer/lib/52-vless-install.sh
-          grep -q 'XRAY_SERVICE_USER:-arl-xray' installer/lib/52-vless-install.sh
-          grep -q 'XRAY_SERVICE_GROUP:-arl-xray' installer/lib/52-vless-install.sh
+          grep -Fq 'XRAY_SERVICE_USER="${XRAY_SERVICE_USER:-arl-xray}"' installer/lib/52-vless-install.sh
+          grep -Fq 'XRAY_SERVICE_GROUP="${XRAY_SERVICE_GROUP:-arl-xray}"' installer/lib/52-vless-install.sh
           grep -Fqx 'User=${XRAY_SERVICE_USER}' installer/lib/52-vless-install.sh
           grep -Fqx 'Group=${XRAY_SERVICE_GROUP}' installer/lib/52-vless-install.sh
           grep -Fq 'runuser -u "$XRAY_SERVICE_USER" -- test -r "$XRAY_CORE_CONFIG"' installer/lib/52-vless-install.sh
+          grep -Fq 'chown root:"$xray_group" "$XRAY_CORE_CONFIG"' installer/lib/51-vless-config.sh
+          grep -Fq 'chmod 0640 "$XRAY_CORE_CONFIG"' installer/lib/51-vless-config.sh
 
+      - name: Verify Xray generated config access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           sudo groupadd --system arl-xray-ci
           sudo useradd --system --gid arl-xray-ci --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home arl-xray-ci
 
