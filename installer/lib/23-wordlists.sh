@@ -56,29 +56,49 @@ prepare_vendored_wordlists() {
   local domain_path="${vendor_root}/subdomains-main.txt"
   local sources_path="${vendor_root}/SOURCES.env"
   local api_lines fuzz_lines domain_lines
+  local api_sha fuzz_sha domain_sha
 
   for path in "$api_path" "$fuzz_path" "$domain_path" "$sources_path"; do
     [[ -s "$path" ]] || die "仓库内置字典缺失或为空：$path"
   done
 
+  # shellcheck disable=SC1090
+  source "$sources_path"
+
   api_lines="$(grep -cve '^[[:space:]]*$' "$api_path")"
   fuzz_lines="$(grep -cve '^[[:space:]]*$' "$fuzz_path")"
   domain_lines="$(grep -cve '^[[:space:]]*$' "$domain_path")"
 
-  [[ "$api_lines" -ge 250 ]] || die "API 字典行数异常：$api_lines"
-  [[ "$fuzz_lines" -ge 10000 ]] || die "Fuzz 字典行数异常：$fuzz_lines"
-  [[ "$domain_lines" -ge 100000 ]] || die "子域名字典行数异常：$domain_lines"
+  [[ "$api_lines" -ge 250 && "$api_lines" == "${API_LINES:-}" ]] ||
+    die "API 字典行数或来源清单异常：actual=${api_lines} expected=${API_LINES:-missing}"
+  [[ "$fuzz_lines" -ge 10000 && "$fuzz_lines" == "${FUZZ_LINES:-}" ]] ||
+    die "Fuzz 字典行数或来源清单异常：actual=${fuzz_lines} expected=${FUZZ_LINES:-missing}"
+  [[ "$domain_lines" -ge 100000 && "$domain_lines" == "${DOMAIN_LINES:-}" ]] ||
+    die "子域名字典行数或来源清单异常：actual=${domain_lines} expected=${DOMAIN_LINES:-missing}"
+
+  api_sha="$(sha256sum "$api_path" | awk '{print $1}')"
+  fuzz_sha="$(sha256sum "$fuzz_path" | awk '{print $1}')"
+  domain_sha="$(sha256sum "$domain_path" | awk '{print $1}')"
+  [[ "$api_sha" == "${API_SHA256:-}" ]] || die 'API 字典 SHA256 校验失败'
+  [[ "$fuzz_sha" == "${FUZZ_SHA256:-}" ]] || die 'Fuzz 字典 SHA256 校验失败'
+  [[ "$domain_sha" == "${DOMAIN_SHA256:-}" ]] || die '子域名字典 SHA256 校验失败'
 
   API_DICT_URL="file://${api_path}"
   FUZZ_DICT_URL="file://${fuzz_path}"
   DOMAIN_DICT_URL="file://${domain_path}"
-  export API_DICT_URL FUZZ_DICT_URL DOMAIN_DICT_URL
+  ARL_MERGE_FULL_DOMAIN_WORDLIST="${ARL_MERGE_FULL_DOMAIN_WORDLIST:-false}"
+  case "$ARL_MERGE_FULL_DOMAIN_WORDLIST" in
+    true|false) ;;
+    *) die 'ARL_MERGE_FULL_DOMAIN_WORDLIST 只能是 true 或 false' ;;
+  esac
+  export API_DICT_URL FUZZ_DICT_URL DOMAIN_DICT_URL ARL_MERGE_FULL_DOMAIN_WORDLIST
 
   # 把旧私密安装脚本留下的第三方 Raw 地址原子替换为本仓库本地路径。
   wordlist_env_set "$ENV_FILE" API_DICT_URL "$API_DICT_URL"
   wordlist_env_set "$ENV_FILE" FUZZ_DICT_URL "$FUZZ_DICT_URL"
   wordlist_env_set "$ENV_FILE" DOMAIN_DICT_URL "$DOMAIN_DICT_URL"
+  wordlist_env_set "$ENV_FILE" ARL_MERGE_FULL_DOMAIN_WORDLIST "$ARL_MERGE_FULL_DOMAIN_WORDLIST"
 
-  ok "仓库内置字典验证通过：API=${api_lines}，Fuzz=${fuzz_lines}，Domain=${domain_lines}"
+  ok "仓库内置字典校验通过：API=${api_lines}，Fuzz=${fuzz_lines}，Domain=${domain_lines}"
   ok "字典来源已切换为本机仓库，不再依赖第三方 raw.githubusercontent.com"
 }
