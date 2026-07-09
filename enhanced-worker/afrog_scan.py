@@ -184,7 +184,7 @@ def normalize_findings(items):
         output.append(
             {
                 # Native generic ARL vuln collection fields.
-                "plg_name": "afrog:{}".format(poc_id or "unknown"),
+                "plg_name": "afrog",
                 "plg_type": "poc",
                 "vul_name": name,
                 "app_name": "Afrog",
@@ -193,6 +193,7 @@ def normalize_findings(items):
                 # Fields consumed by Nuclei-style result renderers and exports.
                 "template_url": "",
                 "template_id": poc_id,
+                "poc_id": poc_id,
                 "vuln_name": name,
                 "vuln_severity": severity,
                 "vuln_url": vuln_url,
@@ -229,6 +230,15 @@ class AfrogTaskScan(object):
         self.target_path = None
         self._help_cache = None
 
+    def _refresh_report_index(self):
+        indexer = "/usr/local/bin/arl-report-index"
+        if not (os.path.isfile(indexer) and os.access(indexer, os.X_OK)):
+            return
+        try:
+            subprocess.run([indexer], check=False, close_fds=True, timeout=60)
+        except Exception as exc:
+            logger.warning("refresh Afrog report index failed: {}".format(exc))
+
     def _status(self, state, **extra):
         elapsed = round(time.time() - self.started_monotonic, 3)
         data = {
@@ -261,6 +271,7 @@ class AfrogTaskScan(object):
             os.chmod(self.status_path, 0o640)
         except Exception:
             pass
+        self._refresh_report_index()
         return data
 
     def _help_text(self):
@@ -331,18 +342,16 @@ class AfrogTaskScan(object):
             command.extend(["-proxy", self.proxy_url])
         return command
 
-    def _update_indexes(self):
-        if os.path.isfile(self.html_path) and os.path.getsize(self.html_path) > 0:
-            latest = os.path.join(self.afrog_dir, "latest.html")
-            try:
-                if os.path.lexists(latest):
-                    os.unlink(latest)
-                os.symlink(os.path.basename(self.html_path), latest)
-            except Exception as exc:
-                logger.warning("update afrog latest report failed: {}".format(exc))
-        indexer = "/usr/local/bin/arl-report-index"
-        if os.path.isfile(indexer) and os.access(indexer, os.X_OK):
-            subprocess.run([indexer], check=False, close_fds=True, timeout=60)
+    def _update_latest_link(self):
+        if not (os.path.isfile(self.html_path) and os.path.getsize(self.html_path) > 0):
+            return
+        latest = os.path.join(self.afrog_dir, "latest.html")
+        try:
+            if os.path.lexists(latest):
+                os.unlink(latest)
+            os.symlink(os.path.basename(self.html_path), latest)
+        except Exception as exc:
+            logger.warning("update afrog latest report failed: {}".format(exc))
 
     def run(self):
         os.makedirs(self.afrog_dir, exist_ok=True)
@@ -409,7 +418,7 @@ class AfrogTaskScan(object):
 
         raw_results = load_json_results(self.json_path)
         findings = normalize_findings(raw_results)
-        self._update_indexes()
+        self._update_latest_link()
         xray_status = "executed_via_proxy" if proxy_ok else "not_configured_direct_scan"
         if return_code == 0:
             state = "executed_findings" if findings else "executed_zero_findings"
