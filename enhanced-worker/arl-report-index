@@ -1,28 +1,201 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""Build one static report index for Afrog and Chaitin xray."""
+
+from __future__ import print_function
+
 import html
 import json
 import os
+import re
+import time
 from pathlib import Path
 
 
 root = Path(os.environ.get("ARL_REPORT_ROOT", "/var/lib/arl-reports"))
 afrog = root / "afrog"
-root.mkdir(parents=True, exist_ok=True)
-afrog.mkdir(parents=True, exist_ok=True)
+afrog_details = afrog / "details"
+xray = root / "xray"
+xray_history = xray / "history"
+
+for directory in (root, afrog, afrog_details, xray, xray_history):
+    directory.mkdir(parents=True, exist_ok=True)
 
 
 def esc(value):
-    return html.escape(str(value if value not in (None, "") else "-"))
+    return html.escape(str(value if value not in (None, "") else "-"), quote=True)
 
 
-def read_status(path):
+def slug(value):
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip("-")
+    return normalized[:160] or "item"
+
+
+def atomic_write(path, content):
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(content, encoding="utf-8")
+    os.replace(str(temporary), str(path))
+
+
+def read_json(path, default=None):
+    if default is None:
+        default = {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        return default
+
+
+def read_result_items(path):
+    data = read_json(path, [])
+    if isinstance(data, dict):
+        data = (
+            data.get("results")
+            or data.get("data")
+            or data.get("vulnerabilities")
+            or []
+        )
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def first_value(mapping, *names):
+    if not isinstance(mapping, dict):
+        return ""
+    for name in names:
+        value = mapping.get(name)
+        if value not in (None, "", [], {}):
+            return value
+    return ""
+
+
+def format_mtime(path):
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+    except Exception:
+        return "-"
+
+
+def severity_name(value):
+    value = str(value or "unknown").strip().lower()
+    aliases = {
+        "严重": "critical",
+        "高危": "high",
+        "中危": "medium",
+        "低危": "low",
+        "信息": "info",
+    }
+    return aliases.get(value, value)
+
+
+def severity_badge(value):
+    severity = severity_name(value)
+    return '<span class="badge sev-{}">{}</span>'.format(
+        esc(slug(severity)), esc(severity)
+    )
+
+
+def source_badge(value):
+    source = str(value or "unknown").lower()
+    return '<span class="badge source-{}">{}</span>'.format(
+        esc(slug(source)), esc(value)
+    )
+
+
+def external_target(value):
+    target = str(value or "").strip()
+    if target.startswith(("http://", "https://")):
+        return '<a href="{}" target="_blank" rel="noopener noreferrer">{}</a>'.format(
+            esc(target), esc(target)
+        )
+    return esc(target)
+
+
+def render_evidence(value):
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    else:
+        text = str(value if value not in (None, "") else "-")
+    return esc(text)
+
+
+def detail_document(
+    title,
+    severity,
+    target,
+    task_id,
+    ended_at,
+    poc_id,
+    item,
+    report_links,
+):
+    request = first_value(item, "request", "raw_request", "curl_command")
+    response = first_value(item, "response", "raw_response")
+    return """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>@@TITLE@@</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f7fa;color:#1f2937}
+main{max-width:1200px;margin:0 auto;padding:24px}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.label{font-size:12px;color:#6b7280;margin-bottom:4px}
+.value{word-break:break-word}
+pre{white-space:pre-wrap;word-break:break-word;background:#111827;color:#e5e7eb;padding:14px;border-radius:8px;overflow:auto;max-height:620px}
+a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}
+.badge{display:inline-block;padding:3px 9px;border-radius:999px;background:#eef2ff}
+.sev-critical{background:#7f1d1d;color:#fff}.sev-high{background:#dc2626;color:#fff}.sev-medium{background:#f59e0b;color:#111827}.sev-low{background:#fde68a;color:#111827}.sev-info{background:#dbeafe;color:#1e3a8a}
+</style>
+</head>
+<body><main>
+<p><a href="../../index.html#afrog-details">← 返回统一漏洞索引</a></p>
+<div class="card">
+<h1>@@TITLE@@</h1>
+<div class="grid">
+<div><div class="label">来源</div><div class="value">Afrog</div></div>
+<div><div class="label">等级</div><div class="value">@@SEVERITY@@</div></div>
+<div><div class="label">目标</div><div class="value">@@TARGET@@</div></div>
+<div><div class="label">ARL 任务</div><div class="value">@@TASK@@</div></div>
+<div><div class="label">PoC / 模板</div><div class="value">@@POC@@</div></div>
+<div><div class="label">结束时间</div><div class="value">@@ENDED@@</div></div>
+</div>
+<p>@@REPORT_LINKS@@</p>
+</div>
+<div class="card"><h2>请求证据</h2><pre>@@REQUEST@@</pre></div>
+<div class="card"><h2>响应证据</h2><pre>@@RESPONSE@@</pre></div>
+<div class="card"><h2>完整原始结果</h2><pre>@@RAW@@</pre></div>
+</main></body></html>
+""".replace("@@TITLE@@", esc(title)).replace(
+        "@@SEVERITY@@", severity_badge(severity)
+    ).replace(
+        "@@TARGET@@", external_target(target)
+    ).replace(
+        "@@TASK@@", esc(task_id)
+    ).replace(
+        "@@POC@@", esc(poc_id)
+    ).replace(
+        "@@ENDED@@", esc(ended_at)
+    ).replace(
+        "@@REPORT_LINKS@@", report_links
+    ).replace(
+        "@@REQUEST@@", render_evidence(request)
+    ).replace(
+        "@@RESPONSE@@", render_evidence(response)
+    ).replace(
+        "@@RAW@@", render_evidence(item)
+    )
+
+
+for old_detail in afrog_details.glob("*.html"):
+    try:
+        old_detail.unlink()
+    except Exception:
+        pass
 
 
 status_files = sorted(
@@ -31,78 +204,303 @@ status_files = sorted(
     reverse=True,
 )
 
-rows = []
+finding_rows = []
+execution_rows = []
+afrog_finding_count = 0
+non_success_count = 0
+
 for status_path in status_files:
-    status = read_status(status_path)
+    status = read_json(status_path, {})
+    if not isinstance(status, dict):
+        status = {}
     base_name = status_path.name[:-len(".status.json")]
     html_path = afrog / (base_name + ".html")
     json_path = afrog / (base_name + ".json")
-    xray = status.get("xray") if isinstance(status.get("xray"), dict) else {}
+    task_id = status.get("task_id") or "-"
+    ended_at = status.get("ended_at") or format_mtime(status_path)
+    state = status.get("status") or "unknown"
+    xray_state = (
+        status.get("xray", {}).get("status", "not_executed")
+        if isinstance(status.get("xray"), dict)
+        else "not_executed"
+    )
 
-    links = ['<a href="{}">状态 JSON</a>'.format(esc(status_path.name))]
+    execution_links = [
+        '<a href="afrog/{}">状态 JSON</a>'.format(esc(status_path.name))
+    ]
     if html_path.is_file() and html_path.stat().st_size > 0:
-        links.insert(0, '<a href="{}">Afrog HTML</a>'.format(esc(html_path.name)))
+        execution_links.insert(
+            0, '<a href="afrog/{}">Afrog 完整报告</a>'.format(esc(html_path.name))
+        )
     if json_path.is_file() and json_path.stat().st_size > 0:
-        links.append('<a href="{}">Afrog JSON</a>'.format(esc(json_path.name)))
+        execution_links.append(
+            '<a href="afrog/{}">原始 JSON</a>'.format(esc(json_path.name))
+        )
 
-    rows.append(
-        "<tr>"
-        "<td>{}</td><td>{}</td><td>{}</td><td>{}</td>"
-        "<td>{}</td><td>{}</td><td>{}</td>"
-        "</tr>".format(
-            esc(status.get("task_id")),
-            esc(status.get("status")),
+    if not str(state).startswith("executed_"):
+        non_success_count += 1
+
+    execution_rows.append(
+        '<tr data-status="{}"><td>{}</td><td>{}</td><td>{}</td>'
+        '<td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
+            esc(state),
+            esc(task_id),
+            esc(state),
             esc(status.get("target_count", 0)),
             esc(status.get("findings_count", 0)),
-            esc(xray.get("status")),
-            esc(status.get("ended_at")),
-            " | ".join(links),
+            esc(xray_state),
+            esc(ended_at),
+            " | ".join(execution_links),
         )
     )
 
-if not rows:
-    rows.append('<tr><td colspan="7">目前还没有 Afrog 执行记录</td></tr>')
+    if not json_path.is_file():
+        continue
 
-(afrog / "index.html").write_text(
-    """<!doctype html>
+    items = read_result_items(json_path)
+    for index, item in enumerate(items, 1):
+        pocinfo = item.get("pocinfo") if isinstance(item.get("pocinfo"), dict) else {}
+        info = item.get("info") if isinstance(item.get("info"), dict) else {}
+        target = str(
+            first_value(item, "fulltarget", "full-target", "url", "matched-at")
+            or first_value(item, "target", "host")
+            or ""
+        )
+        poc_id = str(
+            first_value(pocinfo, "id")
+            or first_value(item, "poc", "poc_name", "poc-name", "id", "template-id")
+            or ""
+        )
+        name = str(
+            first_value(pocinfo, "infoname", "name")
+            or first_value(info, "name")
+            or first_value(item, "vuln_name", "vulnerability", "name")
+            or poc_id
+            or "Afrog 漏洞"
+        )
+        severity = severity_name(
+            first_value(pocinfo, "infoseg", "severity")
+            or first_value(info, "severity")
+            or first_value(item, "vuln_severity", "severity", "level")
+            or "unknown"
+        )
+
+        detail_name = "{}-{:04d}.html".format(slug(base_name), index)
+        detail_path = afrog_details / detail_name
+        report_links = []
+        if html_path.is_file() and html_path.stat().st_size > 0:
+            report_links.append(
+                '<a href="../{}">查看 Afrog 完整报告</a>'.format(esc(html_path.name))
+            )
+        report_links.append(
+            '<a href="../{}">查看原始 JSON</a>'.format(esc(json_path.name))
+        )
+        report_links.append(
+            '<a href="../{}">查看任务状态</a>'.format(esc(status_path.name))
+        )
+        atomic_write(
+            detail_path,
+            detail_document(
+                name,
+                severity,
+                target,
+                task_id,
+                ended_at,
+                poc_id,
+                item,
+                " | ".join(report_links),
+            ),
+        )
+
+        search_blob = " ".join(
+            [str(name), str(severity), str(target), str(task_id), str(poc_id), "afrog"]
+        ).lower()
+        finding_rows.append(
+            '<tr data-source="afrog" data-severity="{}" data-search="{}">'
+            '<td>{}</td><td>{}</td><td>{}</td><td>{}</td>'
+            '<td>{}</td><td>{}</td><td><a href="afrog/details/{}">查看漏洞详情</a></td>'
+            "</tr>".format(
+                esc(severity),
+                esc(search_blob),
+                source_badge("Afrog"),
+                severity_badge(severity),
+                esc(name),
+                external_target(target),
+                esc(task_id),
+                esc(ended_at),
+                esc(detail_name),
+            )
+        )
+        afrog_finding_count += 1
+
+
+xray_reports = []
+current_xray = xray / "proxy.html"
+if current_xray.is_file() and current_xray.stat().st_size > 0:
+    xray_reports.append(("当前报告", current_xray, "xray/proxy.html"))
+
+history_paths = sorted(
+    xray_history.glob("proxy-*.html"),
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+)
+for history_path in history_paths[:100]:
+    xray_reports.append(
+        (
+            "历史报告",
+            history_path,
+            "xray/history/{}".format(history_path.name),
+        )
+    )
+
+for report_kind, report_path, href in xray_reports:
+    name = "长亭 Xray {}漏洞报告".format(report_kind)
+    ended_at = format_mtime(report_path)
+    search_blob = " ".join(["xray", report_kind, name, ended_at]).lower()
+    finding_rows.append(
+        '<tr data-source="xray" data-severity="report" data-search="{}">'
+        '<td>{}</td><td>{}</td><td>{}</td><td>代理流量汇总</td>'
+        '<td>-</td><td>{}</td><td><a href="{}">打开 Xray 具体漏洞报告</a></td>'
+        "</tr>".format(
+            esc(search_blob),
+            source_badge("Xray"),
+            severity_badge("report"),
+            esc(name),
+            esc(ended_at),
+            esc(href),
+        )
+    )
+
+if not finding_rows:
+    finding_rows.append(
+        '<tr class="empty"><td colspan="7">目前没有可展示的 Afrog 漏洞或 Xray 报告。</td></tr>'
+    )
+if not execution_rows:
+    execution_rows.append(
+        '<tr><td colspan="7">目前还没有 Afrog / Xray 任务执行记录。</td></tr>'
+    )
+
+
+summary = """
+<div class="summary-card"><strong>{}</strong><span>Afrog 漏洞</span></div>
+<div class="summary-card"><strong>{}</strong><span>Xray 报告</span></div>
+<div class="summary-card"><strong>{}</strong><span>扫描任务</span></div>
+<div class="summary-card"><strong>{}</strong><span>未执行或失败</span></div>
+""".format(
+    afrog_finding_count,
+    len(xray_reports),
+    len(status_files),
+    non_success_count,
+)
+
+quick_xray = (
+    '<a class="button" href="xray/proxy.html">打开长亭 Xray 当前报告</a>'
+    if current_xray.is_file() and current_xray.stat().st_size > 0
+    else '<span class="button disabled">Xray 当前报告尚未生成</span>'
+)
+latest_afrog = afrog / "latest.html"
+quick_afrog = (
+    '<a class="button" href="afrog/latest.html">打开 Afrog 最新完整报告</a>'
+    if latest_afrog.exists()
+    else '<span class="button disabled">Afrog 完整报告尚未生成</span>'
+)
+
+index_document = """<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>Afrog / Xray 执行记录</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ARL Xray / Afrog 统一漏洞索引</title>
 <style>
-body{{font-family:sans-serif;margin:24px;line-height:1.5}}
-table{{border-collapse:collapse;width:100%}}
-th,td{{border:1px solid #ddd;padding:8px;text-align:left;vertical-align:top}}
-th{{background:#f5f5f5}}
-code{{background:#f5f5f5;padding:2px 4px}}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f7fa;color:#1f2937}
+main{max-width:1500px;margin:0 auto;padding:24px}
+h1{margin-bottom:8px}.muted{color:#6b7280}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:20px 0}
+.summary-card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+.summary-card strong{display:block;font-size:28px}.summary-card span{color:#6b7280}
+.panel{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px;margin:16px 0;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}
+input,select{padding:9px 11px;border:1px solid #d1d5db;border-radius:8px;background:#fff}
+input{min-width:280px;flex:1}.button{display:inline-block;padding:9px 12px;border-radius:8px;background:#0969da;color:#fff;text-decoration:none;margin-right:8px}.disabled{background:#9ca3af}
+.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;min-width:980px}
+th,td{border-bottom:1px solid #e5e7eb;padding:10px;text-align:left;vertical-align:top}
+th{background:#f9fafb;position:sticky;top:0}
+a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}
+.badge{display:inline-block;padding:3px 9px;border-radius:999px;background:#eef2ff;white-space:nowrap}
+.source-afrog{background:#dbeafe;color:#1e3a8a}.source-xray{background:#ede9fe;color:#5b21b6}
+.sev-critical{background:#7f1d1d;color:#fff}.sev-high{background:#dc2626;color:#fff}.sev-medium{background:#f59e0b;color:#111827}.sev-low{background:#fde68a;color:#111827}.sev-info{background:#dbeafe;color:#1e3a8a}.sev-report{background:#ede9fe;color:#5b21b6}.sev-unknown{background:#e5e7eb;color:#374151}
+.hidden{display:none}
 </style>
 </head>
-<body>
-<h1>Afrog / Xray 执行记录</h1>
-<p>状态会明确区分未执行、失败、执行零命中和执行有命中；不能把未执行解释成零漏洞。</p>
-<table>
+<body><main>
+<h1>ARL Xray / Afrog 统一漏洞索引</h1>
+<p class="muted">Afrog 按单个漏洞生成可点击详情页；Xray 点击后进入其完整漏洞报告。未执行、失败和零命中不会混为同一种状态。</p>
+<div class="summary">@@SUMMARY@@</div>
+<div class="panel">@@QUICK_XRAY@@ @@QUICK_AFROG@@</div>
+
+<section class="panel" id="afrog-details">
+<h2>统一漏洞明细</h2>
+<div class="toolbar">
+<input id="search" type="search" placeholder="搜索漏洞名称、目标、任务或 PoC">
+<select id="source"><option value="">全部来源</option><option value="afrog">Afrog</option><option value="xray">Xray</option></select>
+<select id="severity"><option value="">全部等级</option><option value="critical">critical</option><option value="high">high</option><option value="medium">medium</option><option value="low">low</option><option value="info">info</option><option value="report">Xray 报告</option><option value="unknown">unknown</option></select>
+</div>
+<div class="table-wrap"><table id="findings">
+<thead><tr><th>来源</th><th>等级</th><th>漏洞/报告</th><th>目标</th><th>ARL 任务</th><th>时间</th><th>详情</th></tr></thead>
+<tbody>@@FINDING_ROWS@@</tbody>
+</table></div>
+</section>
+
+<section class="panel" id="execution">
+<h2>任务执行状态</h2>
+<div class="table-wrap"><table>
 <thead><tr><th>ARL 任务</th><th>Afrog 状态</th><th>目标数</th><th>命中数</th><th>Xray 状态</th><th>结束时间</th><th>证据</th></tr></thead>
-<tbody>{}</tbody>
-</table>
-<p><a href="../">返回扫描报告首页</a></p>
-</body>
-</html>
-""".format("".join(rows)),
-    encoding="utf-8",
+<tbody>@@EXECUTION_ROWS@@</tbody>
+</table></div>
+</section>
+
+<script>
+(function(){
+  var search=document.getElementById("search");
+  var source=document.getElementById("source");
+  var severity=document.getElementById("severity");
+  var rows=[].slice.call(document.querySelectorAll("#findings tbody tr[data-source]"));
+  function apply(){
+    var q=search.value.toLowerCase().trim();
+    rows.forEach(function(row){
+      var sourceOk=!source.value||row.getAttribute("data-source")===source.value;
+      var severityOk=!severity.value||row.getAttribute("data-severity")===severity.value;
+      var searchOk=!q||(row.getAttribute("data-search")||"").indexOf(q)!==-1;
+      row.classList.toggle("hidden",!(sourceOk&&severityOk&&searchOk));
+    });
+  }
+  search.addEventListener("input",apply);
+  source.addEventListener("change",apply);
+  severity.addEventListener("change",apply);
+})();
+</script>
+</main></body></html>
+""".replace("@@SUMMARY@@", summary).replace(
+    "@@QUICK_XRAY@@", quick_xray
+).replace(
+    "@@QUICK_AFROG@@", quick_afrog
+).replace(
+    "@@FINDING_ROWS@@", "".join(finding_rows)
+).replace(
+    "@@EXECUTION_ROWS@@", "".join(execution_rows)
 )
 
-(root / "index.html").write_text(
-    """<!doctype html>
+atomic_write(root / "index.html", index_document)
+
+compatibility_document = """<!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>ARL 扫描报告</title></head>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=../index.html#afrog-details">
+<title>跳转到统一漏洞索引</title>
+</head>
 <body>
-<h1>ARL 扫描报告</h1>
-<ul>
-<li><a href="xray/proxy.html">长亭 Xray 实时报告</a></li>
-<li><a href="afrog/index.html">Afrog / Xray 任务执行记录与报告</a></li>
-</ul>
-</body>
-</html>
-""",
-    encoding="utf-8",
-)
+<p>Afrog 与 Xray 已合并到统一索引：<a href="../index.html#afrog-details">打开统一漏洞索引</a></p>
+</body></html>
+"""
+atomic_write(afrog / "index.html", compatibility_document)
