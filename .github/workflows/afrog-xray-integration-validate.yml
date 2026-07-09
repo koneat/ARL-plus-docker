@@ -35,6 +35,8 @@ jobs:
           grep -q 'ARL_XRAY_PROXY_URL' docker-compose.yml
           grep -q 'executed_zero_findings' enhanced-worker/afrog_scan.py
           grep -q 'pocinfo' enhanced-worker/afrog_scan.py
+          grep -q '"vul_name": name' enhanced-worker/afrog_scan.py
+          grep -q '"plg_type": "poc"' enhanced-worker/afrog_scan.py
           grep -q 'self.run_func("afrog_scan", self.afrog_scan)' enhanced-worker/patch_worker.py
           grep -q 'utils.conn_db("vuln").insert_one(item)' enhanced-worker/patch_worker.py
 
@@ -131,11 +133,15 @@ jobs:
           assert result['status']['xray']['status'] == 'executed_via_proxy', result
           assert len(result['findings']) == 1, result
           finding = result['findings'][0]
-          assert finding['plg_name'] == 'afrog', finding
+          assert finding['plg_name'] == 'afrog:demo-poc', finding
+          assert finding['plg_type'] == 'poc', finding
+          assert finding['vul_name'] == 'Demo Finding', finding
+          assert finding['app_name'] == 'Afrog', finding
           assert finding['template_id'] == 'demo-poc', finding
           assert finding['vuln_name'] == 'Demo Finding', finding
           assert finding['vuln_severity'] == 'high', finding
           assert finding['vuln_url'] == 'https://example.test/admin', finding
+          assert finding['verify_data']['poc'] == 'demo-poc', finding
           args = json.loads((root / 'args.json').read_text())
           assert '-proxy' in args, args
           assert args[args.index('-proxy') + 1].endswith(':%d' % port), args
@@ -148,7 +154,7 @@ jobs:
 
           stop['value'] = True
           listener.close()
-          print('afrog-xray-state-and-schema-tests-ok')
+          print('afrog-xray-state-and-native-schema-tests-ok')
           PY
 
       - name: Validate enhanced Compose environment
