@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import html
+import os
+from pathlib import Path
+
+
+root = Path(os.environ.get("ARL_REPORT_ROOT", "/var/lib/arl-reports"))
+afrog = root / "afrog"
+root.mkdir(parents=True, exist_ok=True)
+afrog.mkdir(parents=True, exist_ok=True)
+
+reports = sorted(
+    (
+        path
+        for path in afrog.glob("*.html")
+        if path.name not in {"index.html", "latest.html"}
+    ),
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+)
+
+items = [
+    '<li><a href="{}">{}</a></li>'.format(
+        html.escape(path.name), html.escape(path.name)
+    )
+    for path in reports
+]
+
+(afrog / "index.html").write_text(
+    """<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Afrog 扫描报告</title></head>
+<body>
+<h1>Afrog 扫描报告</h1>
+<ul>{}</ul>
+<p><a href="../">返回扫描报告首页</a></p>
+</body>
+</html>
+""".format("".join(items) if items else "<li>目前还没有 Afrog 报告</li>"),
+    encoding="utf-8",
+)
+
+(root / "index.html").write_text(
+    """<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>ARL 扫描报告</title></head>
+<body>
+<h1>ARL 扫描报告</h1>
+<ul>
+<li><a href="xray/proxy.html">长亭 xray 实时报告</a></li>
+<li><a href="afrog/index.html">Afrog 历史报告</a></li>
+</ul>
+</body>
+</html>
+""",
+    encoding="utf-8",
+)
