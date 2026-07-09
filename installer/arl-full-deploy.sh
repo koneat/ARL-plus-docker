@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_FULL_INSTALLER_VERSION=2026.07.09-vendored-wordlists
+# ARL_FULL_INSTALLER_VERSION=2026.07.09-vendored-wordlists.2
 set -Eeuo pipefail
 umask 077
 
@@ -137,6 +137,7 @@ AFROG_VERSION="${AFROG_VERSION:-v3.5.3}"
 RAD_VERSION="${RAD_VERSION:-1.0}"
 REPORT_ROOT="${REPORT_ROOT:-/var/lib/arl-reports}"
 REPORT_WORLD_READABLE="${REPORT_WORLD_READABLE:-false}"
+ARL_MERGE_FULL_DOMAIN_WORDLIST="${ARL_MERGE_FULL_DOMAIN_WORDLIST:-false}"
 
 AFROG_PROXY_URL="${AFROG_PROXY_URL-}"
 AFROG_CALLBACK_DOMAIN="${AFROG_CALLBACK_DOMAIN:-callback.red}"
@@ -147,11 +148,11 @@ ARL_NUCLEI_SEVERITY="${ARL_NUCLEI_SEVERITY:-info,low,medium,high,critical}"
 ARL_NUCLEI_EXCLUDE_TAGS="${ARL_NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}"
 ARL_NUCLEI_RATE_LIMIT="${ARL_NUCLEI_RATE_LIMIT:-120}"
 
-# 字典完整快照已提交在本仓库。即使旧私密配置仍保存第三方 Raw 地址，
-# clone_or_update_repo 之后也会由 prepare_vendored_wordlists 强制切换到这些本地文件。
-API_DICT_URL="${API_DICT_URL:-file://${ARL_DIR}/wordlists/vendor/api-endpoints.txt}"
-FUZZ_DICT_URL="${FUZZ_DICT_URL:-file://${ARL_DIR}/wordlists/vendor/raft-small-files.txt}"
-DOMAIN_DICT_URL="${DOMAIN_DICT_URL:-file://${ARL_DIR}/wordlists/vendor/subdomains-main.txt}"
+# 这三项是公开运行资源，不接受私密配置覆盖。旧配置里的第三方 Raw URL
+# 会在仓库完成克隆后被原子替换，避免 check-only 和正式安装再次访问外部字典源。
+API_DICT_URL="file://${ARL_DIR}/wordlists/vendor/api-endpoints.txt"
+FUZZ_DICT_URL="file://${ARL_DIR}/wordlists/vendor/raft-small-files.txt"
+DOMAIN_DICT_URL="file://${ARL_DIR}/wordlists/vendor/subdomains-main.txt"
 WIH_RULES_URL="${WIH_RULES_URL-}"
 FILELEAK_SERVICE_URL="${FILELEAK_SERVICE_URL-}"
 NUCLEI_SCAN_SERVICE_URL="${NUCLEI_SCAN_SERVICE_URL-}"
