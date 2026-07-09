@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 HOST_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
-    r"[a-zA-Z]{2,63}$"
+    r"(?:[a-zA-Z]{2,63}|xn--[a-zA-Z0-9-]{2,59})$"
 )
 
 
@@ -37,6 +37,44 @@ def unique(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
 
 
+def normalize_hostname(value: str) -> str | None:
+    value = value.strip().lower().rstrip(".")
+    if not value:
+        return None
+    try:
+        ascii_value = value.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    return ascii_value if HOST_RE.fullmatch(ascii_value) else None
+
+
+def split_host_port(value: str) -> tuple[str, int | None] | None:
+    value = value.strip()
+    if not value:
+        return None
+
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing < 0:
+            return None
+        host = value[1:closing]
+        suffix = value[closing + 1 :]
+        if not suffix:
+            return host, None
+        if not suffix.startswith(":") or not suffix[1:].isdigit():
+            return None
+        port = int(suffix[1:])
+        return (host, port) if 1 <= port <= 65535 else None
+
+    if value.count(":") == 1:
+        host, raw_port = value.rsplit(":", 1)
+        if raw_port.isdigit():
+            port = int(raw_port)
+            return (host, port) if host and 1 <= port <= 65535 else None
+
+    return value, None
+
+
 def normalize_url(value: str) -> tuple[str, str] | None:
     try:
         parsed = urlsplit(value)
@@ -46,17 +84,22 @@ def normalize_url(value: str) -> tuple[str, str] | None:
         return None
 
     host = parsed.hostname.lower().rstrip(".")
-    host_for_netloc = host
     try:
-        if ipaddress.ip_address(host).version == 6:
-            host_for_netloc = f"[{host}]"
+        address = ipaddress.ip_address(host)
+        host = str(address)
+        host_for_netloc = f"[{host}]" if address.version == 6 else host
     except ValueError:
-        pass
+        normalized_host = normalize_hostname(host)
+        if not normalized_host:
+            return None
+        host = normalized_host
+        host_for_netloc = host
 
     try:
-        port = f":{parsed.port}" if parsed.port else ""
+        parsed_port = parsed.port
     except ValueError:
         return None
+    port = f":{parsed_port}" if parsed_port else ""
 
     netloc = f"{host_for_netloc}{port}"
     normalized = urlunsplit(
@@ -88,17 +131,27 @@ def classify(value: str) -> tuple[str, str] | None:
     except ValueError:
         pass
 
-    host_part = candidate
-    if candidate.count(":") == 1:
-        possible_host, possible_port = candidate.rsplit(":", 1)
-        if possible_port.isdigit():
-            host_part = possible_host
+    split = split_host_port(candidate)
+    if split is None:
+        return None
+    raw_host, port = split
 
-    host_part = host_part.lower()
-    if HOST_RE.fullmatch(host_part):
-        return "domain", candidate.lower()
+    try:
+        address = ipaddress.ip_address(raw_host)
+    except ValueError:
+        address = None
+    if address is not None:
+        host = str(address)
+        if port is None:
+            return "ip", host
+        probe = f"[{host}]:{port}" if address.version == 6 else f"{host}:{port}"
+        return "ip-port", f"{host}\t{probe}"
 
-    return None
+    host = normalize_hostname(raw_host)
+    if not host:
+        return None
+    probe = f"{host}:{port}" if port is not None else host
+    return "domain", f"{host}\t{probe}"
 
 
 def write_lines(path: Path, values: list[str]) -> None:
@@ -149,14 +202,17 @@ def main() -> int:
             except ValueError:
                 domains.append(host)
         elif kind == "domain":
-            hosts.append(normalized)
-            domains.append(
-                normalized.rsplit(":", 1)[0]
-                if normalized.rsplit(":", 1)[-1].isdigit()
-                else normalized
-            )
-            http_probes.append(normalized)
-            raw_targets.append(normalized)
+            host, probe = normalized.split("\t", 1)
+            hosts.append(host)
+            domains.append(host)
+            http_probes.append(probe)
+            raw_targets.append(probe)
+        elif kind == "ip-port":
+            host, probe = normalized.split("\t", 1)
+            hosts.append(host)
+            ips.append(host)
+            http_probes.append(probe)
+            raw_targets.append(probe)
         elif kind == "ip":
             hosts.append(normalized)
             ips.append(normalized)
