@@ -11,10 +11,6 @@ from typing import Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 HOST_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.I)
-STATIC_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot",
-    ".mp3", ".mp4", ".avi", ".mov", ".webm", ".css",
-}
 SENSITIVE_EXTENSIONS = {
     ".env", ".bak", ".old", ".save", ".sql", ".sqlite", ".db", ".log", ".map", ".yaml", ".yml",
     ".json", ".xml", ".ini", ".conf", ".config", ".properties", ".zip", ".tar", ".gz", ".tgz", ".7z", ".rar",
@@ -85,7 +81,10 @@ def normalize_url(value: str) -> str | None:
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         return None
     host = parsed.hostname.lower().strip(".")
-    port = parsed.port
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
     netloc = host
     if ":" in host:
         netloc = f"[{host}]"
