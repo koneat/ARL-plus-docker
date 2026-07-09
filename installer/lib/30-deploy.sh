@@ -6,12 +6,33 @@ validate_compose() {
   ok "docker compose config 校验通过"
 }
 
+clear_missing_local_image_selection() {
+  local key="$1"
+  local env_file="${ARL_DIR}/.env"
+  local env_tool="${ARL_DIR}/scripts/compose-env.py"
+  local image=''
+
+  [[ -f "$env_tool" ]] || return 0
+  if python3 "$env_tool" "$env_file" has "$key"; then
+    image="$(python3 "$env_tool" "$env_file" get "$key")"
+    if [[ -n "$image" ]] && ! docker image inspect "$image" >/dev/null 2>&1; then
+      warn "${key} 指向的本机镜像不存在：${image}；本次先使用基础镜像，后续阶段会重新构建"
+      python3 "$env_tool" "$env_file" unset "$key"
+    fi
+  fi
+}
+
 deploy_services() {
   cd "$ARL_DIR"
   docker volume inspect arl_db >/dev/null 2>&1 || docker volume create arl_db >/dev/null
 
-  log "拉取 ARL 依赖镜像"
-  docker compose pull web worker scheduler mongodb rabbitmq
+  clear_missing_local_image_selection ARL_WEB_IMAGE
+  clear_missing_local_image_selection ARL_WORKER_IMAGE
+  clear_missing_local_image_selection ARL_SCHEDULER_IMAGE
+
+  log "拉取基础 ARL、MongoDB 与 RabbitMQ 镜像"
+  docker pull "$ARL_BASE_IMAGE"
+  docker compose pull mongodb rabbitmq
 
   log "构建 MCP 镜像"
   docker compose build --pull mcp-local mcp

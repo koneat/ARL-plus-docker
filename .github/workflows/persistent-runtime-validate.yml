@@ -1,0 +1,230 @@
+name: persistent-runtime-validate
+
+on:
+  pull_request:
+    paths:
+      - 'docker-compose.yml'
+      - 'docker-compose.enhanced-worker.yml'
+      - 'docker-compose.proxy-runtime.yml'
+      - 'enhanced-worker/**'
+      - 'proxy-runtime/**'
+      - 'smart-worker/**'
+      - 'scripts/compose-env.py'
+      - 'scripts/update-enhanced-worker.sh'
+      - 'scripts/rollback-enhanced-worker.sh'
+      - 'scripts/update-proxy-runtime.sh'
+      - 'scripts/rollback-proxy-runtime.sh'
+      - 'scripts/update-smart-wildcard.sh'
+      - 'scripts/rollback-smart-wildcard.sh'
+      - 'installer/**'
+      - 'ENHANCED_WORKER.md'
+      - '.github/workflows/persistent-runtime-validate.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker-compose.yml'
+      - 'docker-compose.enhanced-worker.yml'
+      - 'docker-compose.proxy-runtime.yml'
+      - 'enhanced-worker/**'
+      - 'proxy-runtime/**'
+      - 'smart-worker/**'
+      - 'scripts/compose-env.py'
+      - 'scripts/update-enhanced-worker.sh'
+      - 'scripts/rollback-enhanced-worker.sh'
+      - 'scripts/update-proxy-runtime.sh'
+      - 'scripts/rollback-proxy-runtime.sh'
+      - 'scripts/update-smart-wildcard.sh'
+      - 'scripts/rollback-smart-wildcard.sh'
+      - 'installer/**'
+      - 'ENHANCED_WORKER.md'
+      - '.github/workflows/persistent-runtime-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        run: |
+          bash -n enhanced-worker/install_tools.sh
+          bash -n enhanced-worker/afrog-arl
+          bash -n scripts/update-enhanced-worker.sh
+          bash -n scripts/rollback-enhanced-worker.sh
+          bash -n scripts/update-proxy-runtime.sh
+          bash -n scripts/rollback-proxy-runtime.sh
+          bash -n scripts/update-smart-wildcard.sh
+          bash -n scripts/rollback-smart-wildcard.sh
+          bash -n installer/arl-full-deploy.sh
+          for file in installer/lib/*.sh; do bash -n "$file"; done
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile \
+            scripts/compose-env.py \
+            enhanced-worker/patch_worker.py \
+            enhanced-worker/nuclei_scan.py \
+            enhanced-worker/arl-report-index \
+            smart-worker/patch_arl.py \
+            smart-worker/app/services/wildcardSmart.py
+
+      - name: Test atomic Compose env editor
+        run: |
+          tmp="$(mktemp -d)"
+          cat >"$tmp/.env" <<'EOF'
+          KEEP=value
+          ARL_WORKER_IMAGE=old-worker
+          ARL_WORKER_IMAGE=duplicate-worker
+          EOF
+          python scripts/compose-env.py "$tmp/.env" set ARL_WORKER_IMAGE new-worker
+          test "$(python scripts/compose-env.py "$tmp/.env" get ARL_WORKER_IMAGE)" = new-worker
+          test "$(grep -c '^ARL_WORKER_IMAGE=' "$tmp/.env")" -eq 1
+          grep -qx 'KEEP=value' "$tmp/.env"
+          python scripts/compose-env.py "$tmp/.env" set AFROG_PROXY_URL 'socks5://172.18.0.1:1080'
+          test "$(python scripts/compose-env.py "$tmp/.env" get AFROG_PROXY_URL)" = 'socks5://172.18.0.1:1080'
+          python scripts/compose-env.py "$tmp/.env" unset ARL_WORKER_IMAGE
+          if python scripts/compose-env.py "$tmp/.env" has ARL_WORKER_IMAGE; then exit 1; fi
+
+      - name: Test ARL Nuclei adapter without network
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import json
+          import logging
+          import sys
+          import tempfile
+          import types
+          from pathlib import Path
+
+          root = Path(tempfile.mkdtemp())
+          app = types.ModuleType('app')
+          config = types.ModuleType('app.config')
+          utils = types.ModuleType('app.utils')
+          class Config:
+              TMP_PATH = str(root)
+          config.Config = Config
+          utils.get_logger = lambda: logging.getLogger('test')
+          utils.random_choices = lambda: 'abcdef'
+          app.utils = utils
+          sys.modules['app'] = app
+          sys.modules['app.config'] = config
+          sys.modules['app.utils'] = utils
+
+          spec = importlib.util.spec_from_file_location('nuclei_scan', 'enhanced-worker/nuclei_scan.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          scan = module.NucleiScan(['https://example.com'])
+          scan._help_cache = '-jsonl -tags -exclude-tags -severity -type -rate-limit -bulk-size -timeout -retries -stats -stats-interval -duc -no-color'
+          assert scan._check_json_flag() == '-jsonl'
+          scan._gen_target_file()
+          command = scan._build_command()
+          assert '-jsonl' in command
+          assert command[command.index('-exclude-tags') + 1] == 'dos,fuzz,intrusive,bruteforce'
+          with open(scan.nuclei_result_path, 'w') as handle:
+              handle.write(json.dumps({'template-id':'env-file','info':{'name':'Env File','severity':'high'},'matched-at':'https://example.com/.env'}) + '\n')
+              handle.write('not-json\n')
+          results = scan.dump_result()
+          assert len(results) == 1
+          assert results[0]['template_id'] == 'env-file'
+          print('nuclei-adapter-test-ok')
+          PY
+
+      - name: Validate Compose rendering
+        run: |
+          docker compose -f docker-compose.yml config >/tmp/base.yml
+          grep -q 'ARL_NUCLEI_TAGS' /tmp/base.yml
+          grep -q '/var/lib/arl-reports' /tmp/base.yml
+
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.enhanced-worker.yml \
+            config >/tmp/enhanced.yml
+          grep -q 'arl-enhanced-worker:v3.0.1-2026.07' /tmp/enhanced.yml
+          grep -q 'enhanced-worker/Dockerfile' /tmp/enhanced.yml
+
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.proxy-runtime.yml \
+            config >/tmp/proxy.yml
+          grep -q 'arl-proxy-runtime:v3.0.1-2026.07' /tmp/proxy.yml
+
+      - name: Enforce persistent and non-destructive updates
+        run: |
+          ! grep -R --line-number -E 'docker[[:space:]]+exec.*(pip|yum|apt-get|wget|curl)|docker[[:space:]]+cp' installer/lib
+          ! grep -R --line-number -E 'docker compose (down|restart)|down -v|docker volume rm' \
+            scripts/update-enhanced-worker.sh \
+            scripts/rollback-enhanced-worker.sh \
+            scripts/update-proxy-runtime.sh \
+            scripts/rollback-proxy-runtime.sh \
+            scripts/update-smart-wildcard.sh \
+            scripts/rollback-smart-wildcard.sh
+          grep -q -- '--no-deps' scripts/update-enhanced-worker.sh
+          grep -q -- '--no-deps' scripts/update-proxy-runtime.sh
+          grep -q -- '--no-deps' scripts/update-smart-wildcard.sh
+          grep -q 'ARL_WORKER_IMAGE' docker-compose.yml
+          grep -q 'ARL_WEB_IMAGE' docker-compose.yml
+          grep -q 'ARL_SCHEDULER_IMAGE' docker-compose.yml
+          grep -q 'set ARL_WORKER_IMAGE' scripts/update-enhanced-worker.sh
+          grep -q 'set ARL_WEB_IMAGE' scripts/update-proxy-runtime.sh
+
+  build-proxy-runtime:
+    needs: static-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build proxy runtime
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.proxy-runtime.yml \
+            build --pull web
+      - name: Smoke-test proxy runtime
+        run: |
+          docker run --rm --entrypoint python3.6 \
+            arl-proxy-runtime:v3.0.1-2026.07 \
+            -c 'import socks; print("proxy-runtime-ok")'
+
+  build-enhanced-worker:
+    needs: static-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build enhanced Worker
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.enhanced-worker.yml \
+            build --pull worker
+      - name: Smoke-test enhanced Worker
+        run: |
+          docker run --rm --entrypoint sh \
+            arl-enhanced-worker:v3.0.1-2026.07 -c '
+              set -e
+              python3.6 -m py_compile \
+                /code/app/services/massdns.py \
+                /code/app/services/wildcardSmart.py \
+                /code/app/services/nuclei_scan.py \
+                /code/app/tasks/domain.py
+              python3.6 -c "import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan"
+              command -v nuclei
+              command -v afrog
+              command -v rad
+              command -v afrog-arl
+              test -e /usr/lib64/libpcap.so.0.8
+              grep -qx ".env" /code/app/dicts/file_top_2000.txt
+              grep -qx "swagger.json" /code/app/dicts/file_top_2000.txt
+              grep -qx "admin" /code/app/dicts/domain_2w.txt
+              grep -q "ARL_NUCLEI_TAGS" /code/app/services/nuclei_scan.py
+              grep -q "WildcardSmartFilter" /code/app/tasks/domain.py
+              ! grep -q "if ip in self.not_found_domain_ips" /code/app/tasks/domain.py
+            '

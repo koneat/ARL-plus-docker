@@ -19,7 +19,8 @@
 - 外部入口不会默认监听 `0.0.0.0`；
 - 默认不关闭 UFW；
 - 默认 MCP 只读；
-- 默认不启用 VLESS、长亭 xray 和 Worker 运行时扩展；
+- 默认不开启 VLESS、长亭 xray 和完整 Worker 工具扩展；
+- 智能泛解析 Worker 默认启用；
 - 扫描报告默认不是宿主机全局可读。
 
 生产需要写操作时，在本机配置中显式设置：
@@ -36,6 +37,43 @@ MCP_EXTERNAL_BIND_IP='0.0.0.0'
 
 该入口仍强制 Bearer Token，但更推荐绑定 `127.0.0.1` 后通过 Nginx、Caddy 或 Cloudflare Tunnel 转发。
 
+## 持久化镜像
+
+安装器不再通过 `docker exec pip/yum` 或 `docker cp` 修改运行中的 Worker。
+
+启用：
+
+```dotenv
+ENABLE_WORKER_EXTENSIONS='true'
+```
+
+会构建持久化增强 Worker，内置：
+
+```text
+智能泛解析
+Nuclei 结果与 API/文件泄露策略
+Afrog
+RAD
+Chromium
+libpcap
+PySocks
+高价值路径、子域名和口令字典
+```
+
+启用 ARL HTTP 代理时，Web 和 Scheduler 也会切换到带持久化 PySocks 的运行时镜像。
+
+成功切换后的镜像选择保存在仓库 `.env`：
+
+```dotenv
+ARL_WORKER_IMAGE=...
+ARL_WEB_IMAGE=...
+ARL_SCHEDULER_IMAGE=...
+```
+
+以后普通执行 `docker compose up -d` 不会丢失增强能力。
+
+详细说明见根目录 `ENHANCED_WORKER.md`。
+
 ## 静态检查
 
 ```bash
@@ -45,7 +83,7 @@ bash installer/arl-full-deploy.sh \
   --check-only
 ```
 
-`--check-only` 不安装、不联网、不修改系统，用于检查全部模块的 Shell 语法、端口、布尔参数、本机免认证绑定和 VLESS 节点格式。
+`--check-only` 不安装、不联网、不修改系统，用于检查全部模块的 Shell 语法、端口、布尔参数、本机免认证绑定、持久化镜像参数和 VLESS 节点格式。
 
 ## 正式执行
 
@@ -61,14 +99,25 @@ bash installer/arl-full-deploy.sh --env-file /root/arl-full.env
 2. 更新仓库并备份已有配置；
 3. 写入 ARL、MongoDB、MCP 双入口配置；
 4. 启动并验证 ARL、RabbitMQ、MongoDB、MCP；
-5. 安全切换智能泛解析 Worker，失败自动回滚；
-6. 可选安装 VLESS/Xray-core、长亭 xray、Afrog/RAD；
-7. 自动生成本机 `scanner-secrets/uncover-provider.yaml`；
-8. 校验并可选构建独立 Scanner；
-9. 输出凭据、日志和扫描命令位置。
+5. 检查 VLESS 出口；
+6. 构建并安全切换智能或完整增强 Worker；
+7. 启用 ARL 代理时构建 Web/Scheduler PySocks 运行时；
+8. 可选启动长亭 xray；
+9. 自动生成本机 `scanner-secrets/uncover-provider.yaml`；
+10. 校验并可选构建独立 Scanner；
+11. 输出凭据、日志和扫描命令位置。
 
 ## 生产更新保护
 
-部署引擎不会执行 `docker compose down -v`，不会删除 MongoDB 数据卷。智能泛解析 Worker 使用仓库自带的备份、健康检查和自动回滚脚本，只重建 Worker，不重启 Web、MongoDB、RabbitMQ 或 MCP。
+部署引擎不会执行 `docker compose down -v`，不会删除 MongoDB 数据卷。
 
-Worker 内通过 `docker cp` 注入的 Afrog/RAD 和字典属于运行时扩展；Worker 被重新创建后需要重新运行部署引擎。独立 Scanner 使用专用镜像，不受这个限制。
+自定义镜像更新脚本都会：
+
+- 备份当前精确镜像；
+- 先离线自检；
+- 仅重建目标服务并使用 `--no-deps`；
+- 检查进程、模块和日志；
+- 失败自动回滚；
+- 保留 `.env` 中的持久镜像选择。
+
+Worker 更新不会重启 Web、MongoDB、RabbitMQ 或 MCP；Web/Scheduler 代理运行时更新不会重启 Worker、MongoDB、RabbitMQ 或 MCP。

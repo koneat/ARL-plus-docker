@@ -1,0 +1,18 @@
+# Git and generated scan data
+.git
+.github
+scan-results
+scanner-cache
+scanner-secrets
+scanner-pocs
+
+# Runtime data and local credentials
+.env
+*.log
+image
+poc
+config-docker.yaml
+mongo-init.js
+
+# Local backups
+*.bak.*

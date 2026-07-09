@@ -1,0 +1,36 @@
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: enhanced-worker/Dockerfile
+      args:
+        ARL_BASE_IMAGE: ${ARL_BASE_IMAGE:-ki9mu/arl-ki9mu:v3.0.1}
+        AFROG_VERSION: ${AFROG_VERSION:-v3.5.3}
+        RAD_VERSION: ${RAD_VERSION:-1.0}
+        INSTALL_CHROMIUM: ${INSTALL_CHROMIUM:-true}
+    image: ${ARL_ENHANCED_WORKER_IMAGE:-arl-enhanced-worker:v3.0.1-2026.07}
+    environment:
+      - LANG=en_US.UTF-8
+      - TZ=Asia/Shanghai
+      - WILDCARD_SMART_FILTER=${WILDCARD_SMART_FILTER:-true}
+      - WILDCARD_BASELINE_SAMPLES=${WILDCARD_BASELINE_SAMPLES:-3}
+      - WILDCARD_VERIFY_MAX=${WILDCARD_VERIFY_MAX:-500}
+      - WILDCARD_HTTP_CONCURRENCY=${WILDCARD_HTTP_CONCURRENCY:-20}
+      - WILDCARD_HTTP_TIMEOUT=${WILDCARD_HTTP_TIMEOUT:-6}
+      - WILDCARD_BODY_MAX_BYTES=${WILDCARD_BODY_MAX_BYTES:-262144}
+      - WILDCARD_SIMILARITY_THRESHOLD=${WILDCARD_SIMILARITY_THRESHOLD:-0.78}
+      - WILDCARD_KEEP_UNKNOWN_PASSIVE=${WILDCARD_KEEP_UNKNOWN_PASSIVE:-true}
+      - ARL_NUCLEI_TAGS=${ARL_NUCLEI_TAGS:-cve,exposure,config,files,backup,token,logs,debug,misconfig,api,swagger,openapi,graphql,webhook}
+      - ARL_NUCLEI_SEVERITY=${ARL_NUCLEI_SEVERITY:-info,low,medium,high,critical}
+      - ARL_NUCLEI_EXCLUDE_TAGS=${ARL_NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}
+      - ARL_NUCLEI_RATE_LIMIT=${ARL_NUCLEI_RATE_LIMIT:-120}
+      - ARL_NUCLEI_BULK_SIZE=${ARL_NUCLEI_BULK_SIZE:-20}
+      - ARL_NUCLEI_TIMEOUT=${ARL_NUCLEI_TIMEOUT:-10}
+      - ARL_NUCLEI_RETRIES=${ARL_NUCLEI_RETRIES:-1}
+      - ARL_REPORT_ROOT=/var/lib/arl-reports
+      - REPORT_WORLD_READABLE=${REPORT_WORLD_READABLE:-false}
+      - AFROG_PROXY_URL=${AFROG_PROXY_URL:-}
+      - AFROG_CALLBACK_DOMAIN=${AFROG_CALLBACK_DOMAIN:-callback.red}
+      - AFROG_CALLBACK_API_URL=${AFROG_CALLBACK_API_URL:-http://callback.red}
+    volumes:
+      - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/var/lib/arl-reports"

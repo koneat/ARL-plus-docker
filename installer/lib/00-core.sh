@@ -12,7 +12,7 @@ require_root() {
 }
 
 validate_env() {
-  local bool_name bool_value port_name port_value
+  local bool_name bool_value port_name port_value image_name image_value
 
   for port_name in MCP_LOCAL_PORT MCP_EXTERNAL_PORT ARL_HTTPS_PORT XRAY_SOCKS_PORT CHAITIN_XRAY_PORT; do
     port_value="${!port_name}"
@@ -27,9 +27,15 @@ validate_env() {
   case "$MCP_ALLOW_LOCAL_UNAUTHENTICATED" in true|false) ;; *) die "MCP_ALLOW_LOCAL_UNAUTHENTICATED 只能是 true 或 false" ;; esac
   case "$DISABLE_UFW" in true|false) ;; *) die "DISABLE_UFW 只能是 true 或 false" ;; esac
 
-  for bool_name in ENABLE_VLESS_PROXY ENABLE_ARL_HTTP_PROXY FORCE_ARL_PROXY ENABLE_CHAITIN_XRAY ENABLE_SMART_WILDCARD ENABLE_SCANNER_STACK BUILD_SCANNER_IMAGE ENABLE_WORKER_EXTENSIONS REPORT_WORLD_READABLE; do
+  for bool_name in ENABLE_VLESS_PROXY ENABLE_ARL_HTTP_PROXY FORCE_ARL_PROXY ENABLE_CHAITIN_XRAY ENABLE_SMART_WILDCARD ENABLE_SCANNER_STACK BUILD_SCANNER_IMAGE ENABLE_WORKER_EXTENSIONS INSTALL_CHROMIUM REPORT_WORLD_READABLE; do
     bool_value="${!bool_name}"
     case "$bool_value" in true|false) ;; *) die "${bool_name} 只能是 true 或 false" ;; esac
+  done
+
+  for image_name in ARL_BASE_IMAGE ARL_ENHANCED_WORKER_IMAGE ARL_PROXY_RUNTIME_IMAGE; do
+    image_value="${!image_name}"
+    [[ -n "$image_value" && "$image_value" != *[[:space:]]* ]] ||
+      die "${image_name} 不能为空或包含空白字符"
   done
 
   if [[ -n "$ARL_MONGO_URI" && "$ARL_MONGO_URI" != mongodb://* && "$ARL_MONGO_URI" != mongodb+srv://* ]]; then
@@ -38,6 +44,10 @@ validate_env() {
 
   if [[ "$ENABLE_ARL_HTTP_PROXY" == "true" && "$ENABLE_VLESS_PROXY" != "true" ]]; then
     die "ENABLE_ARL_HTTP_PROXY=true 时必须同时启用 ENABLE_VLESS_PROXY"
+  fi
+
+  if [[ "$ENABLE_ARL_HTTP_PROXY" == "true" && "$ENABLE_SMART_WILDCARD" != "true" && "$ENABLE_WORKER_EXTENSIONS" != "true" ]]; then
+    die "启用 ARL HTTP 代理时必须启用智能 Worker 或持久化增强 Worker，以保证 Worker 内置 PySocks"
   fi
 
   if [[ "$MCP_LOCAL_BIND_IP" != "127.0.0.1" && "$MCP_LOCAL_BIND_IP" != "::1" ]]; then

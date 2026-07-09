@@ -1,107 +1,85 @@
 # shellcheck shell=bash
 
-install_afrog_and_rad() {
-  [[ "$ENABLE_WORKER_EXTENSIONS" == "true" ]] || {
-    warn "已关闭 Afrog、RAD、字典和 Worker 扩展"
+compose_env_set() {
+  local key="$1"
+  local value="$2"
+  local tool="${ARL_DIR}/scripts/compose-env.py"
+  [[ -f "$tool" ]] || die "仓库缺少 scripts/compose-env.py"
+  python3 "$tool" "${ARL_DIR}/.env" set "$key" "$value"
+}
+
+compose_env_unset() {
+  local key="$1"
+  local tool="${ARL_DIR}/scripts/compose-env.py"
+  [[ -f "$tool" ]] || die "仓库缺少 scripts/compose-env.py"
+  python3 "$tool" "${ARL_DIR}/.env" unset "$key"
+}
+
+prepare_worker_runtime_env() {
+  compose_env_set AFROG_VERSION "$AFROG_VERSION"
+  compose_env_set RAD_VERSION "$RAD_VERSION"
+  compose_env_set INSTALL_CHROMIUM "$INSTALL_CHROMIUM"
+  compose_env_set REPORT_WORLD_READABLE "$REPORT_WORLD_READABLE"
+  compose_env_set AFROG_CALLBACK_DOMAIN "$AFROG_CALLBACK_DOMAIN"
+  compose_env_set AFROG_CALLBACK_API_URL "$AFROG_CALLBACK_API_URL"
+  compose_env_set ARL_NUCLEI_TAGS "$ARL_NUCLEI_TAGS"
+  compose_env_set ARL_NUCLEI_SEVERITY "$ARL_NUCLEI_SEVERITY"
+  compose_env_set ARL_NUCLEI_EXCLUDE_TAGS "$ARL_NUCLEI_EXCLUDE_TAGS"
+  compose_env_set ARL_NUCLEI_RATE_LIMIT "$ARL_NUCLEI_RATE_LIMIT"
+
+  if [[ "$ENABLE_VLESS_PROXY" == "true" && "${XRAY_PROXY_HEALTHY:-false}" == "true" ]]; then
+    AFROG_PROXY_URL="socks5://${DOCKER_GATEWAY}:${XRAY_SOCKS_PORT}"
+    export AFROG_PROXY_URL
+    compose_env_set AFROG_PROXY_URL "$AFROG_PROXY_URL"
+    ok "Afrog 将使用已验证的 VLESS 出口：$AFROG_PROXY_URL"
+  else
+    AFROG_PROXY_URL=''
+    export AFROG_PROXY_URL
+    compose_env_unset AFROG_PROXY_URL
+    if [[ "$ENABLE_VLESS_PROXY" == "true" ]]; then
+      warn "VLESS 出口未通过健康检查，Afrog 不强制使用失效代理"
+    fi
+  fi
+}
+
+install_worker_variant() {
+  prepare_worker_runtime_env
+
+  if [[ "$ENABLE_WORKER_EXTENSIONS" == "true" ]]; then
+    require_amd64
+    local updater="${ARL_DIR}/scripts/update-enhanced-worker.sh"
+    [[ -f "$updater" ]] || die "仓库缺少持久化增强 Worker 更新脚本"
+    chmod 0755 \
+      "$updater" \
+      "${ARL_DIR}/scripts/rollback-enhanced-worker.sh" \
+      "${ARL_DIR}/scripts/compose-env.py"
+    log "构建并切换持久化增强 Worker：智能泛解析、Nuclei、Afrog、RAD、Chromium、libpcap、PySocks 与高价值字典"
+    (
+      cd "$ARL_DIR"
+      ARL_BASE_IMAGE="$ARL_BASE_IMAGE" \
+      ARL_ENHANCED_WORKER_IMAGE="$ARL_ENHANCED_WORKER_IMAGE" \
+      AFROG_VERSION="$AFROG_VERSION" \
+      RAD_VERSION="$RAD_VERSION" \
+      INSTALL_CHROMIUM="$INSTALL_CHROMIUM" \
+      bash "$updater"
+    )
+    ok "持久化增强 Worker 已启用；容器重建后工具不会丢失"
     return 0
-  }
-
-  require_amd64
-  local tmp_dir afrog_archive afrog_binary rad_archive rad_binary
-  tmp_dir="$(mktemp -d)"
-
-  afrog_archive="${tmp_dir}/afrog.zip"
-  log "下载 Afrog ${AFROG_VERSION}"
-  download_release_asset \
-    "zan8in/afrog" "$AFROG_VERSION" 'linux_amd64\.zip$' "$afrog_archive"
-  unzip -oq "$afrog_archive" -d "$tmp_dir/afrog"
-  afrog_binary="$(find "$tmp_dir/afrog" -type f -name afrog -perm /111 | head -n 1)"
-  [[ -n "$afrog_binary" ]] || die "Afrog 压缩包内没有找到 afrog"
-  install -m 0755 "$afrog_binary" /usr/local/bin/afrog
-
-  rad_archive="${tmp_dir}/rad.zip"
-  log "下载 RAD ${RAD_VERSION}"
-  curl -fL --retry 5 --retry-all-errors \
-    "https://github.com/chaitin/rad/releases/download/${RAD_VERSION}/rad_linux_amd64.zip" \
-    -o "$rad_archive"
-  unzip -oq "$rad_archive" -d "$tmp_dir/rad"
-  rad_binary="$(find "$tmp_dir/rad" -type f -name rad_linux_amd64 | head -n 1)"
-  [[ -n "$rad_binary" ]] || die "RAD 压缩包内没有找到 rad_linux_amd64"
-  install -m 0755 "$rad_binary" /usr/local/bin/rad
-
-  local afrog_proxy_url=''
-  if [[ "$ENABLE_VLESS_PROXY" == "true" ]]; then
-    afrog_proxy_url="socks5://${DOCKER_GATEWAY}:${XRAY_SOCKS_PORT}"
   fi
 
-  cat > /usr/local/bin/afrog-arl <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-REPORT_ROOT='${REPORT_ROOT}'
-REPORT_WORLD_READABLE='${REPORT_WORLD_READABLE}'
-PROXY_URL='${afrog_proxy_url}'
-mkdir -p "\${REPORT_ROOT}/afrog"
-STAMP="\$(date +%Y%m%d-%H%M%S)"
-OUTPUT="\${REPORT_ROOT}/afrog/afrog-\${STAMP}.html"
-
-if [[ "\$#" -eq 0 ]]; then
-  echo "用法：afrog-arl -t https://目标"
-  echo "或：  afrog-arl -T /path/targets.txt"
-  exit 2
-fi
-
-args=("\$@" -o "\$OUTPUT")
-if [[ -n "\$PROXY_URL" ]]; then
-  args+=( -proxy "\$PROXY_URL" )
-fi
-
-set +e
-/usr/local/bin/afrog "\${args[@]}"
-STATUS=\$?
-set -e
-
-if [[ -s "\$OUTPUT" ]]; then
-  ln -sfn "\$(basename "\$OUTPUT")" "\${REPORT_ROOT}/afrog/latest.html"
-fi
-ARL_REPORT_ROOT="\$REPORT_ROOT" /usr/local/bin/arl-report-index
-if [[ "\${REPORT_WORLD_READABLE:-false}" == "true" ]]; then
-  chmod -R a+rX "\$REPORT_ROOT"
-else
-  chmod 0750 "\$REPORT_ROOT" "\$REPORT_ROOT/afrog"
-  chmod 0640 "\$OUTPUT" 2>/dev/null || true
-fi
-
-echo "Afrog 报告：\$OUTPUT"
-exit "\$STATUS"
-EOF
-  chmod 0755 /usr/local/bin/afrog-arl
-
-  HOME=/root /usr/local/bin/afrog -h >/dev/null 2>&1 || true
-  configure_afrog_callback /root/.config/afrog/afrog-config.yaml
-
-  docker cp /usr/local/bin/afrog arl_worker:/usr/local/bin/afrog
-  docker cp /usr/local/bin/rad arl_worker:/usr/local/bin/rad
-  docker cp /usr/local/bin/afrog-arl arl_worker:/usr/local/bin/afrog-arl
-  docker cp /usr/local/bin/arl-report-index arl_worker:/usr/local/bin/arl-report-index
-
-  docker exec arl_worker sh -lc \
-    'chmod +x /usr/local/bin/afrog /usr/local/bin/rad /usr/local/bin/afrog-arl /usr/local/bin/arl-report-index'
-
-  HOME=/root docker exec arl_worker sh -lc \
-    'HOME=/root /usr/local/bin/afrog -h >/dev/null 2>&1 || true'
-  docker cp arl_worker:/root/.config/afrog/afrog-config.yaml \
-    "${tmp_dir}/worker-afrog-config.yaml" 2>/dev/null || true
-  if [[ -f "${tmp_dir}/worker-afrog-config.yaml" ]]; then
-    configure_afrog_callback "${tmp_dir}/worker-afrog-config.yaml"
-    docker cp "${tmp_dir}/worker-afrog-config.yaml" \
-      arl_worker:/root/.config/afrog/afrog-config.yaml
+  if [[ "$ENABLE_SMART_WILDCARD" == "true" ]]; then
+    install_smart_wildcard
+    return 0
   fi
 
-  patch_worker_packages
-  patch_worker_dicts "$tmp_dir"
+  if [[ "$ENABLE_ARL_HTTP_PROXY" == "true" ]]; then
+    die "启用 ARL HTTP 代理时，必须启用 ENABLE_SMART_WILDCARD 或 ENABLE_WORKER_EXTENSIONS，以提供持久化 PySocks Worker"
+  fi
 
-  cd "$ARL_DIR"
-  docker compose restart worker
-  ok "Afrog、RAD 与 Worker 扩展安装完成"
-  rm -rf "$tmp_dir"
+  ok "使用仓库基础 Worker，不安装额外扩展"
+}
+
+# 兼容旧安装器函数名；实际实现已改为持久化自定义镜像。
+install_afrog_and_rad() {
+  install_worker_variant
 }

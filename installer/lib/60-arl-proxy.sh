@@ -40,33 +40,41 @@ for i, line in enumerate(lines):
 if section is None:
     if lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
-    lines += ["\nPROXY:\n", f"  HTTP_URL: {json.dumps(value)}\n"]
+    lines += ["\nPROXY:\n", "  HTTP_URL: {}\n".format(json.dumps(value))]
 else:
     replaced = False
     for i in range(section + 1, section_end):
         if re.match(r"^\s{2}HTTP_URL\s*:", lines[i]):
-            lines[i] = f"  HTTP_URL: {json.dumps(value)}\n"
+            lines[i] = "  HTTP_URL: {}\n".format(json.dumps(value))
             replaced = True
             break
     if not replaced:
-        lines.insert(section + 1, f"  HTTP_URL: {json.dumps(value)}\n")
+        lines.insert(section + 1, "  HTTP_URL: {}\n".format(json.dumps(value)))
 
 path.write_text("".join(lines), encoding="utf-8")
 PY
 
-  log "给 ARL Web/Worker 安装 PySocks"
-  docker exec arl_web sh -lc 'python3.6 -m pip install --disable-pip-version-check PySocks' ||
-    die "arl_web 安装 PySocks 失败"
-  docker exec arl_worker sh -lc 'python3.6 -m pip install --disable-pip-version-check PySocks' ||
-    die "arl_worker 安装 PySocks 失败"
+  local updater="${ARL_DIR}/scripts/update-proxy-runtime.sh"
+  [[ -f "$updater" ]] || die "仓库缺少持久化 Web/Scheduler 代理运行时脚本"
+  chmod 0755 \
+    "$updater" \
+    "${ARL_DIR}/scripts/rollback-proxy-runtime.sh" \
+    "${ARL_DIR}/scripts/compose-env.py"
 
-  cd "$ARL_DIR"
-  docker compose restart web worker scheduler
+  log "构建并切换带持久化 PySocks 的 Web/Scheduler 镜像"
+  (
+    cd "$ARL_DIR"
+    ARL_BASE_IMAGE="$ARL_BASE_IMAGE" \
+    ARL_PROXY_RUNTIME_IMAGE="$ARL_PROXY_RUNTIME_IMAGE" \
+    ARL_HTTPS_PORT="$ARL_HTTPS_PORT" \
+    bash "$updater"
+  )
 
   wait_http "代理配置后的 ARL Web" \
     "https://127.0.0.1:${ARL_HTTPS_PORT}/api/doc" \
     "-kfsS --connect-timeout 3 --max-time 8" \
-    80 || die "写入代理后 ARL Web 未恢复"
+    80 || die "持久化代理运行时切换后 ARL Web 未恢复"
 
   ok "ARL HTTP 代理已设置：$HTTP_PROXY_URL"
+  ok "Web、Scheduler 与 Worker 的 PySocks 均来自镜像构建，不再运行时 pip 安装"
 }
