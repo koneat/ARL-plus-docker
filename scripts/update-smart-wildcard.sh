@@ -13,9 +13,13 @@ SMART_IMAGE="${ARL_SMART_WORKER_IMAGE:-arl-smart-wildcard:v3.0.1}"
 BASE_IMAGE="${ARL_BASE_IMAGE:-ki9mu/arl-ki9mu:v3.0.1}"
 WORKER_CONTAINER="${ARL_WORKER_CONTAINER:-arl_worker}"
 ROLLBACK_FILE="${BACKUP_DIR}/docker-compose.rollback.yml"
+ENV_FILE="${ROOT_DIR}/.env"
+ENV_TOOL="${ROOT_DIR}/scripts/compose-env.py"
 PROJECT_NAME=""
 CURRENT_IMAGE_ID=""
 BACKUP_TAG=""
+PREVIOUS_ENV_PRESENT=false
+PREVIOUS_ENV_VALUE=""
 UPDATE_STARTED=false
 UPDATE_SUCCEEDED=false
 
@@ -28,13 +32,26 @@ fail() {
   exit 1
 }
 
+state_value() {
+  printf '%s=%q\n' "$1" "$2" >>"$STATE_FILE"
+}
+
 command -v docker >/dev/null 2>&1 || fail "未找到 docker"
 docker compose version >/dev/null 2>&1 || fail "需要 Docker Compose v2（docker compose）"
+command -v python3 >/dev/null 2>&1 || fail "未找到 python3"
 [[ -f docker-compose.yml ]] || fail "缺少 docker-compose.yml"
 [[ -f docker-compose.smart-wildcard.yml ]] || fail "缺少 docker-compose.smart-wildcard.yml"
 [[ -f smart-worker/Dockerfile ]] || fail "缺少 smart-worker/Dockerfile"
+[[ -f "$ENV_TOOL" ]] || fail "缺少 scripts/compose-env.py"
 
 mkdir -p "$BACKUP_DIR"
+touch "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
+if python3 "$ENV_TOOL" "$ENV_FILE" has ARL_WORKER_IMAGE; then
+  PREVIOUS_ENV_PRESENT=true
+  PREVIOUS_ENV_VALUE="$(python3 "$ENV_TOOL" "$ENV_FILE" get ARL_WORKER_IMAGE)"
+fi
 
 if docker inspect "$WORKER_CONTAINER" >/dev/null 2>&1; then
   CURRENT_IMAGE_ID="$(docker inspect -f '{{.Image}}' "$WORKER_CONTAINER")"
@@ -43,7 +60,7 @@ if docker inspect "$WORKER_CONTAINER" >/dev/null 2>&1; then
   docker image tag "$CURRENT_IMAGE_ID" "$BACKUP_TAG"
   log "当前 Worker 镜像已备份：${BACKUP_TAG} (${CURRENT_IMAGE_ID})"
 else
-  log "未发现现有 ${WORKER_CONTAINER}；失败时将恢复基础 Worker"
+  log "未发现现有 ${WORKER_CONTAINER}；失败时恢复 Compose 默认 Worker"
 fi
 
 if [[ -n "$PROJECT_NAME" ]]; then
@@ -54,21 +71,33 @@ else
   BASE_COMPOSE=(docker compose -f docker-compose.yml)
 fi
 
-cat >"$STATE_FILE" <<EOF
-STAMP='${STAMP}'
-ROOT_DIR='${ROOT_DIR}'
-PROJECT_NAME='${PROJECT_NAME}'
-WORKER_CONTAINER='${WORKER_CONTAINER}'
-CURRENT_IMAGE_ID='${CURRENT_IMAGE_ID}'
-BACKUP_TAG='${BACKUP_TAG}'
-SMART_IMAGE='${SMART_IMAGE}'
-BASE_IMAGE='${BASE_IMAGE}'
-EOF
+: >"$STATE_FILE"
+state_value STAMP "$STAMP"
+state_value ROOT_DIR "$ROOT_DIR"
+state_value PROJECT_NAME "$PROJECT_NAME"
+state_value WORKER_CONTAINER "$WORKER_CONTAINER"
+state_value CURRENT_IMAGE_ID "$CURRENT_IMAGE_ID"
+state_value BACKUP_TAG "$BACKUP_TAG"
+state_value SMART_IMAGE "$SMART_IMAGE"
+state_value BASE_IMAGE "$BASE_IMAGE"
+state_value ENV_FILE "$ENV_FILE"
+state_value PREVIOUS_ENV_PRESENT "$PREVIOUS_ENV_PRESENT"
+state_value PREVIOUS_ENV_VALUE "$PREVIOUS_ENV_VALUE"
 cp -f "$STATE_FILE" "$LATEST_FILE"
+chmod 600 "$STATE_FILE" "$LATEST_FILE"
+
+restore_previous_env() {
+  if [[ "$PREVIOUS_ENV_PRESENT" == "true" ]]; then
+    python3 "$ENV_TOOL" "$ENV_FILE" set ARL_WORKER_IMAGE "$PREVIOUS_ENV_VALUE"
+  else
+    python3 "$ENV_TOOL" "$ENV_FILE" unset ARL_WORKER_IMAGE
+  fi
+}
 
 rollback_worker() {
   log "执行 Worker 隔离回滚；不会操作 Web、Scheduler、MongoDB、RabbitMQ 或 MCP"
-  if [[ -n "$BACKUP_TAG" ]]; then
+  restore_previous_env
+  if [[ -n "$BACKUP_TAG" ]] && docker image inspect "$BACKUP_TAG" >/dev/null 2>&1; then
     cat >"$ROLLBACK_FILE" <<EOF
 services:
   worker:
@@ -88,7 +117,7 @@ EOF
 }
 
 cleanup_on_exit() {
-  status=$?
+  local status=$?
   if [[ $status -ne 0 && "$UPDATE_STARTED" == "true" && "$UPDATE_SUCCEEDED" != "true" ]]; then
     rollback_worker
   fi
@@ -117,6 +146,8 @@ docker run --rm --entrypoint sh "$SMART_IMAGE" -c '
 '
 
 UPDATE_STARTED=true
+python3 "$ENV_TOOL" "$ENV_FILE" set ARL_WORKER_IMAGE "$SMART_IMAGE"
+
 log "仅重建 arl_worker；不重启其他容器"
 ARL_BASE_IMAGE="$BASE_IMAGE" ARL_SMART_WORKER_IMAGE="$SMART_IMAGE" \
   "${COMPOSE[@]}" up -d --no-deps --force-recreate worker
@@ -150,5 +181,6 @@ fi
 UPDATE_SUCCEEDED=true
 trap - EXIT
 log "更新完成：仅 ${WORKER_CONTAINER} 已切换到 ${SMART_IMAGE}"
+log "镜像选择已持久化到 ${ENV_FILE} 的 ARL_WORKER_IMAGE"
 log "回滚状态文件：${STATE_FILE}"
 log "手工回滚命令：bash scripts/rollback-smart-wildcard.sh"
