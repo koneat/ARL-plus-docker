@@ -1,4 +1,13 @@
 generate_xray_core_config() {
+  local config_dir xray_group
+  config_dir="$(dirname "$XRAY_CORE_CONFIG")"
+  xray_group="${XRAY_SERVICE_GROUP:-arl-xray}"
+
+  # 安装器全局 umask 为 077。若让 Python 自行创建 /etc/xray-core，目录会成为 0700，
+  # 非 root 的 systemd 服务即使面对 0644 配置文件也无法穿越目录。这里显式创建
+  # root:arl-xray 0750 目录，并在写入后把配置限制为 root:arl-xray 0640。
+  install -d -o root -g "$xray_group" -m 0750 "$config_dir"
+
   python3 - "$VLESS_NODES_FILE" "$XRAY_CORE_CONFIG" "$DOCKER_GATEWAY" "$XRAY_SOCKS_PORT" <<'PY'
 from __future__ import annotations
 
@@ -112,5 +121,7 @@ config_file.write_text(
 )
 print(f"[OK] Xray-core 配置已生成，出站节点：{len(outbounds)}")
 PY
-  chmod 0644 "$XRAY_CORE_CONFIG"
+
+  chown root:"$xray_group" "$XRAY_CORE_CONFIG"
+  chmod 0640 "$XRAY_CORE_CONFIG"
 }
