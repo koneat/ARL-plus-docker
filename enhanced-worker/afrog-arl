@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 027
+
+REPORT_ROOT="${ARL_REPORT_ROOT:-/var/lib/arl-reports}"
+REPORT_WORLD_READABLE="${REPORT_WORLD_READABLE:-false}"
+PROXY_URL="${AFROG_PROXY_URL:-}"
+CALLBACK_DOMAIN="${AFROG_CALLBACK_DOMAIN:-callback.red}"
+CALLBACK_API_URL="${AFROG_CALLBACK_API_URL:-http://callback.red}"
+CONFIG_FILE="${HOME:-/root}/.config/afrog/afrog-config.yaml"
+
+if [[ $# -eq 0 ]]; then
+  echo "用法：afrog-arl -t https://目标" >&2
+  echo "或：  afrog-arl -T /path/targets.txt" >&2
+  exit 2
+fi
+
+mkdir -p "$REPORT_ROOT/afrog" "$(dirname "$CONFIG_FILE")"
+if [[ ! -s "$CONFIG_FILE" ]]; then
+  HOME="${HOME:-/root}" /usr/local/bin/afrog -h >/dev/null 2>&1 || true
+fi
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  python3.6 - "$CONFIG_FILE" "$CALLBACK_DOMAIN" "$CALLBACK_API_URL" <<'PY'
+from __future__ import print_function
+
+import io
+import re
+import sys
+
+path, domain, api_url = sys.argv[1:4]
+with io.open(path, "r", encoding="utf-8") as handle:
+    text = handle.read()
+
+if re.search(r"(?m)^\s*domain:\s*.*$", text):
+    text = re.sub(
+        r"(?m)^(\s*domain:\s*).*$",
+        lambda match: match.group(1) + '"{}"'.format(domain),
+        text,
+        count=1,
+    )
+if re.search(r"(?m)^\s*api_url:\s*.*$", text):
+    text = re.sub(
+        r"(?m)^(\s*api_url:\s*).*$",
+        lambda match: match.group(1) + '"{}"'.format(api_url),
+        text,
+        count=1,
+    )
+
+with io.open(path, "w", encoding="utf-8") as handle:
+    handle.write(text)
+PY
+fi
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+OUTPUT="$REPORT_ROOT/afrog/afrog-${STAMP}.html"
+args=("$@" -o "$OUTPUT")
+if [[ -n "$PROXY_URL" ]]; then
+  args+=( -proxy "$PROXY_URL" )
+fi
+
+set +e
+/usr/local/bin/afrog "${args[@]}"
+status=$?
+set -e
+
+if [[ -s "$OUTPUT" ]]; then
+  ln -sfn "$(basename "$OUTPUT")" "$REPORT_ROOT/afrog/latest.html"
+fi
+ARL_REPORT_ROOT="$REPORT_ROOT" /usr/local/bin/arl-report-index
+
+if [[ "$REPORT_WORLD_READABLE" == "true" ]]; then
+  chmod -R a+rX "$REPORT_ROOT"
+else
+  chmod 0750 "$REPORT_ROOT" "$REPORT_ROOT/afrog" 2>/dev/null || true
+  chmod 0640 "$OUTPUT" "$REPORT_ROOT/afrog/index.html" "$REPORT_ROOT/index.html" 2>/dev/null || true
+fi
+
+echo "Afrog 报告：$OUTPUT"
+exit "$status"
