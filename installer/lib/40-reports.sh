@@ -20,7 +20,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-root = Path("/var/lib/arl-reports")
+root = Path(__import__("os").environ.get("ARL_REPORT_ROOT", "/var/lib/arl-reports"))
 afrog = root / "afrog"
 root.mkdir(parents=True, exist_ok=True)
 afrog.mkdir(parents=True, exist_ok=True)
@@ -66,7 +66,7 @@ root_index = """<!doctype html>
 (root / "index.html").write_text(root_index, encoding="utf-8")
 PY
   chmod 0755 /usr/local/bin/arl-report-index
-  /usr/local/bin/arl-report-index
+  ARL_REPORT_ROOT="$REPORT_ROOT" /usr/local/bin/arl-report-index
   if [[ "$REPORT_WORLD_READABLE" == "true" ]]; then
     chmod -R a+rX "$REPORT_ROOT"
     warn "扫描报告已设为宿主机全局可读；报告可能包含敏感资产信息"
