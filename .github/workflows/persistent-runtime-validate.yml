@@ -70,6 +70,7 @@ jobs:
             scripts/compose-env.py \
             enhanced-worker/patch_worker.py \
             enhanced-worker/nuclei_scan.py \
+            enhanced-worker/afrog_scan.py \
             enhanced-worker/arl-report-index \
             smart-worker/patch_arl.py \
             smart-worker/app/services/wildcardSmart.py
@@ -139,6 +140,8 @@ jobs:
         run: |
           docker compose -f docker-compose.yml config >/tmp/base.yml
           grep -q 'ARL_NUCLEI_TAGS' /tmp/base.yml
+          grep -q 'ARL_AUTO_AFROG_SCAN' /tmp/base.yml
+          grep -q 'ARL_XRAY_PROXY_URL' /tmp/base.yml
           grep -q '/var/lib/arl-reports' /tmp/base.yml
 
           docker compose \
@@ -147,6 +150,7 @@ jobs:
             config >/tmp/enhanced.yml
           grep -q 'arl-enhanced-worker:v3.0.1-2026.07' /tmp/enhanced.yml
           grep -q 'enhanced-worker/Dockerfile' /tmp/enhanced.yml
+          grep -q 'ARL_REQUIRE_XRAY_PROXY' /tmp/enhanced.yml
 
           docker compose \
             -f docker-compose.yml \
@@ -201,10 +205,16 @@ jobs:
         uses: actions/checkout@v4
       - name: Build enhanced Worker
         run: |
-          docker compose \
+          set -o pipefail
+          if ! docker compose \
             -f docker-compose.yml \
             -f docker-compose.enhanced-worker.yml \
-            build --pull worker
+            build --pull --progress=plain worker > /tmp/enhanced-worker-build.log 2>&1; then
+            echo '===== enhanced Worker build failure (last 250 lines) ====='
+            tail -n 250 /tmp/enhanced-worker-build.log
+            exit 1
+          fi
+          tail -n 80 /tmp/enhanced-worker-build.log
       - name: Smoke-test enhanced Worker
         run: |
           docker run --rm --entrypoint sh \
@@ -214,8 +224,10 @@ jobs:
                 /code/app/services/massdns.py \
                 /code/app/services/wildcardSmart.py \
                 /code/app/services/nuclei_scan.py \
+                /code/app/services/afrog_scan.py \
+                /code/app/services/commonTask.py \
                 /code/app/tasks/domain.py
-              python3.6 -c "import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan"
+              python3.6 -c "import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan; from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch"
               command -v nuclei
               command -v afrog
               command -v rad
@@ -225,6 +237,9 @@ jobs:
               grep -qx "swagger.json" /code/app/dicts/file_top_2000.txt
               grep -qx "admin" /code/app/dicts/domain_2w.txt
               grep -q "ARL_NUCLEI_TAGS" /code/app/services/nuclei_scan.py
+              grep -q "executed_zero_findings" /code/app/services/afrog_scan.py
+              grep -q "def afrog_scan(self):" /code/app/services/commonTask.py
+              grep -q "self.run_func(\"afrog_scan\", self.afrog_scan)" /code/app/services/commonTask.py
               grep -q "WildcardSmartFilter" /code/app/tasks/domain.py
               ! grep -q "if ip in self.not_found_domain_ips" /code/app/tasks/domain.py
             '
