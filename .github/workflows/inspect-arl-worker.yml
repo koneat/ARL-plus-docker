@@ -1,9 +1,14 @@
 name: inspect-arl-worker
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/arl-xray-afrog-task-integration
+      - main
+    paths:
+      - '.github/workflows/inspect-arl-worker.yml'
+      - 'enhanced-worker/**'
+      - 'docker-compose.yml'
+      - 'installer/**'
 
 permissions:
   contents: read
