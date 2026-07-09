@@ -24,7 +24,6 @@ services:
           - ./poc:/opt/ARL-NPoC/xing/plugins/upload_poc
           - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/code/frontend/report:ro"
           - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}/xray:/code/frontend/xray:ro"
-          - ./scan-results:/code/frontend/report/scanner:ro
           - ./web-ui/patch-xray-entry.sh:/usr/local/bin/patch-xray-entry.sh:ro
         entrypoint: ["sh", "-c", "sh /usr/local/bin/patch-xray-entry.sh; gen_crt.sh; nginx; wait-for-it.sh mongodb:27017; wait-for-it.sh rabbitmq:5672; gunicorn -b 0.0.0.0:5003 app.main:arl_app -w 3 --access-logfile arl_web.log --access-logformat '%({x-real-ip}i)s %(l)s %(u)s %(t)s \"%(r)s\" %(s)s %(b)s \"%(f)s\" \"%(a)s\"'"]
         environment:
@@ -159,7 +158,7 @@ services:
         - NUCLEI_RATE_LIMIT=${NUCLEI_RATE_LIMIT:-120}
         - NUCLEI_TIMEOUT=${NUCLEI_TIMEOUT:-10}
       volumes:
-        - ./scan-results:/work/results
+        - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}/scanner:/work/results"
         - ./scanner-cache/config:/root/.config
         - ./scanner-cache/nuclei-templates:/root/nuclei-templates
         - ./scanner-pocs/nuclei:/opt/pocs/nuclei:ro
