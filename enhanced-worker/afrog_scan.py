@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Automatic Afrog integration for ARL tasks.
 
-The adapter is compatible with the Python 3.6 runtime in the ARL worker image.
-It deliberately records the difference between not executed, failed, executed
-with no findings, and executed with findings.
+Compatible with the Python 3.6 runtime in the ARL worker image.  The adapter
+records whether Afrog/xray did not run, failed, ran with no findings, or ran
+with findings; these states must never be collapsed into a misleading zero.
 """
 
 from __future__ import print_function
@@ -21,8 +21,6 @@ from app import utils
 
 
 logger = utils.get_logger()
-
-
 TRUE_VALUES = set(["1", "true", "yes", "on", "enabled"])
 
 
@@ -52,7 +50,7 @@ def normalize_targets(targets, maximum):
     output = []
     seen = set()
     for raw in targets or []:
-        target = (raw or "").strip()
+        target = str(raw or "").strip()
         if not target or target in seen:
             continue
         if not target.startswith(("http://", "https://")):
@@ -109,6 +107,7 @@ def load_json_results(path):
         return []
     if not raw:
         return []
+
     try:
         data = json.loads(raw)
     except Exception:
@@ -120,6 +119,7 @@ def load_json_results(path):
                 continue
             if isinstance(item, dict):
                 data.append(item)
+
     if isinstance(data, dict):
         data = data.get("results") or data.get("data") or data.get("vulnerabilities") or []
     if not isinstance(data, list):
@@ -127,50 +127,76 @@ def load_json_results(path):
     return [item for item in data if isinstance(item, dict)]
 
 
-def finding_value(item, *names):
+def first_value(mapping, *names):
+    if not isinstance(mapping, dict):
+        return ""
     for name in names:
-        value = item.get(name)
+        value = mapping.get(name)
         if value not in (None, "", [], {}):
             return value
     return ""
 
 
 def normalize_findings(items):
+    """Map Afrog 3.x JSON and legacy variants to ARL's vuln collection schema."""
     output = []
     seen = set()
     for item in items:
+        # Afrog 3.x JSON uses pocinfo.infoname / infoseg / id.
+        pocinfo = item.get("pocinfo") if isinstance(item.get("pocinfo"), dict) else {}
+        # Keep compatibility with Nuclei-shaped and older wrapper output.
         info = item.get("info") if isinstance(item.get("info"), dict) else {}
-        target = str(
-            finding_value(item, "target", "fulltarget", "full-target", "url", "host", "matched-at")
+
+        host_target = str(first_value(item, "target", "host") or "")
+        vuln_url = str(
+            first_value(item, "fulltarget", "full-target", "url", "matched-at")
+            or host_target
+        )
+        poc_id = str(
+            first_value(pocinfo, "id")
+            or first_value(item, "poc", "poc_name", "poc-name", "id", "template-id")
             or ""
         )
         name = str(
-            finding_value(info, "name")
-            or finding_value(item, "poc", "poc_name", "poc-name", "name", "vulnerability")
+            first_value(pocinfo, "infoname", "name")
+            or first_value(info, "name")
+            or first_value(item, "vuln_name", "vulnerability", "name")
+            or poc_id
             or "Afrog finding"
         )
         severity = str(
-            finding_value(info, "severity") or finding_value(item, "severity", "level") or "unknown"
+            first_value(pocinfo, "infoseg", "severity")
+            or first_value(info, "severity")
+            or first_value(item, "vuln_severity", "severity", "level")
+            or "unknown"
         ).lower()
-        key = (name, target)
+
+        key = (poc_id, name, vuln_url)
         if key in seen:
             continue
         seen.add(key)
+
         summary = {
             "name": name,
             "severity": severity,
-            "target": target,
-            "poc": str(finding_value(item, "poc", "poc_name", "poc-name", "id") or ""),
+            "target": host_target,
+            "vuln_url": vuln_url,
+            "poc": poc_id,
         }
         output.append(
             {
-                "plg_name": "afrog",
-                "plg_type": "scan",
-                "vul_name": name,
+                # Fields consumed by the existing ARL vulnerability page.
+                "template_url": "",
+                "template_id": poc_id,
                 "vuln_name": name,
                 "vuln_severity": severity,
+                "vuln_url": vuln_url,
+                "curl_command": "",
+                "target": host_target or vuln_url,
+                # Extra attribution/evidence retained for filtering and review.
+                "plg_name": "afrog",
+                "plg_type": "scan",
                 "app_name": "web",
-                "target": target,
                 "verify_data": json.dumps(summary, ensure_ascii=False, sort_keys=True),
                 "verify_obj": item,
             }
@@ -189,8 +215,11 @@ class AfrogTaskScan(object):
         self.require_xray = env_bool("ARL_REQUIRE_XRAY_PROXY", True)
         self.started_at = utc_now()
         self.started_monotonic = time.time()
+
         stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        safe_task = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in self.task_id)[:80]
+        safe_task = "".join(
+            ch if ch.isalnum() or ch in "-_" else "_" for ch in self.task_id
+        )[:80]
         self.base_name = "afrog-{}-{}".format(safe_task or "unknown", stamp)
         self.afrog_dir = os.path.join(self.report_root, "afrog")
         self.json_path = os.path.join(self.afrog_dir, self.base_name + ".json")
@@ -255,8 +284,36 @@ class AfrogTaskScan(object):
     def _supports(self, flag):
         return flag in self._help_text()
 
+    def _write_targets(self):
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", prefix="arl-afrog-", suffix=".txt", delete=False
+        )
+        try:
+            for target in self.targets:
+                handle.write(target + "\n")
+        finally:
+            handle.close()
+        self.target_path = handle.name
+
+    def _cleanup_target(self):
+        if not self.target_path:
+            return
+        try:
+            os.unlink(self.target_path)
+        except Exception:
+            pass
+        self.target_path = None
+
     def _build_command(self):
-        command = [self.bin_path, "-T", self.target_path, "-j", self.json_path, "-o", self.html_path]
+        command = [
+            self.bin_path,
+            "-T",
+            self.target_path,
+            "-j",
+            self.json_path,
+            "-o",
+            self.html_path,
+        ]
         optional_values = [
             ("-S", os.getenv("ARL_AFROG_SEVERITY", "info,low,medium,high,critical")),
             ("-rl", str(safe_int("ARL_AFROG_RATE_LIMIT", 100, 1, 1000))),
@@ -272,17 +329,6 @@ class AfrogTaskScan(object):
         if self.proxy_url and self._supports("-proxy"):
             command.extend(["-proxy", self.proxy_url])
         return command
-
-    def _write_targets(self):
-        handle = tempfile.NamedTemporaryFile(
-            mode="w", prefix="arl-afrog-", suffix=".txt", delete=False
-        )
-        try:
-            for target in self.targets:
-                handle.write(target + "\n")
-        finally:
-            handle.close()
-        self.target_path = handle.name
 
     def _update_indexes(self):
         if os.path.isfile(self.html_path) and os.path.getsize(self.html_path) > 0:
@@ -307,7 +353,9 @@ class AfrogTaskScan(object):
 
         if not self._help_text():
             status = self._status(
-                "skipped_afrog_unavailable", xray_status="not_executed", reason="afrog unavailable"
+                "skipped_afrog_unavailable",
+                xray_status="not_executed",
+                reason="afrog unavailable",
             )
             return {"findings": [], "status": status}
 
@@ -323,6 +371,7 @@ class AfrogTaskScan(object):
         self._write_targets()
         command = self._build_command()
         if proxy_ok and "-proxy" not in command:
+            self._cleanup_target()
             status = self._status(
                 "skipped_xray_unsupported",
                 xray_status="unsupported",
@@ -355,11 +404,7 @@ class AfrogTaskScan(object):
             return_code = 127
             error = str(exc)
         finally:
-            if self.target_path:
-                try:
-                    os.unlink(self.target_path)
-                except Exception:
-                    pass
+            self._cleanup_target()
 
         raw_results = load_json_results(self.json_path)
         findings = normalize_findings(raw_results)
@@ -371,6 +416,7 @@ class AfrogTaskScan(object):
             state = "failed"
             if proxy_ok:
                 xray_status = "attempted_via_proxy_failed"
+
         status = self._status(
             state,
             findings_count=len(findings),
