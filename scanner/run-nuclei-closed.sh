@@ -65,6 +65,7 @@ def read_errors(path: Path) -> list[dict[str, object]]:
 status = read_kv(out / "nuclei-template-status.txt")
 template_count = int(status.get("template_count", "0") or 0)
 minimum_expected = int(status.get("minimum_expected", "0") or 0)
+templates_required_missing = minimum_expected > 0 and template_count < minimum_expected
 errors = read_errors(out / "errors.log")
 error_names = {str(item.get("name", "")) for item in errors}
 
@@ -82,7 +83,7 @@ pass_status: dict[str, dict[str, object]] = {}
 for name, (targets, output, display_name) in passes.items():
     target_count = count_lines(targets)
     findings_count = count_lines(output)
-    if template_count == 0 and name != "custom":
+    if templates_required_missing and name != "custom":
         state = "failed_templates_missing"
     elif display_name in error_names:
         state = "failed_command"
@@ -100,7 +101,7 @@ for name, (targets, output, display_name) in passes.items():
     }
 
 all_findings = count_lines(out / "nuclei.jsonl")
-if template_count == 0:
+if templates_required_missing:
     overall = "failed_templates_missing"
     exit_code = 20
 elif errors or real_rc != 0:
@@ -124,6 +125,7 @@ payload = {
     "template_dir": status.get("template_dir", ""),
     "template_count": template_count,
     "minimum_expected": minimum_expected,
+    "templates_required_missing": templates_required_missing,
     "findings_count": all_findings,
     "command_errors": errors,
     "passes": pass_status,
