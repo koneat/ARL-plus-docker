@@ -170,8 +170,8 @@ jobs:
           grep -q 'ARL_WORKER_IMAGE' docker-compose.yml
           grep -q 'ARL_WEB_IMAGE' docker-compose.yml
           grep -q 'ARL_SCHEDULER_IMAGE' docker-compose.yml
-          grep -q 'compose-env.py.*set ARL_WORKER_IMAGE' scripts/update-enhanced-worker.sh
-          grep -q 'compose-env.py.*set ARL_WEB_IMAGE' scripts/update-proxy-runtime.sh || grep -q 'set ARL_WEB_IMAGE' scripts/update-proxy-runtime.sh
+          grep -q 'set ARL_WORKER_IMAGE' scripts/update-enhanced-worker.sh
+          grep -q 'set ARL_WEB_IMAGE' scripts/update-proxy-runtime.sh
 
   build-proxy-runtime:
     needs: static-validation
