@@ -25,6 +25,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+sanitize_result_artifacts() {
+  python3 /opt/scanner/sanitize_result_artifacts.py "$OUT"
+  local changed=0
+  if [[ -f "$OUT/artifact-sanitize-stats.json" ]]; then
+    changed="$(jq -r '.total_changed // 0' "$OUT/artifact-sanitize-stats.json" 2>/dev/null || echo 0)"
+  fi
+  log "结果文件 URL 脱敏完成：修改 ${changed} 处"
+}
+
 sanitize_active_targets() {
   local source="$OUT/scan-urls.all.txt"
   [[ -s "$source" ]] || source="$OUT/scan-urls.txt"
@@ -63,6 +72,7 @@ cp "$SCOPE_TMP/cidrs.txt" "$OUT/scope-cidrs.txt"
 log "第一阶段：运行稳定基础扫描链"
 ENABLE_NUCLEI=false ENABLE_AFROG=false \
   /opt/scanner/run-scan-uncover.sh "$TARGET_FILE" "$MODE"
+sanitize_result_artifacts
 
 cp "$OUT/domains.txt" "$OUT/domains.augmented-input.txt" 2>/dev/null || true
 cp "$OUT/scope-domains.txt" "$OUT/domains.txt"
@@ -70,6 +80,7 @@ cp "$OUT/scope-domains.txt" "$OUT/domains.txt"
 if enabled "${ENABLE_SCANNER_V2:-true}"; then
   log "第二阶段：运行资产与 URL 智能增强"
   /opt/scanner/run-intelligence.sh "$OUT" "$MODE"
+  sanitize_result_artifacts
 else
   log "Scanner V2 智能增强已关闭"
 fi
@@ -91,6 +102,7 @@ else
   : >"$OUT/afrog.json"
 fi
 
+sanitize_result_artifacts
 python3 /opt/scanner/summarize.py "$OUT"
 python3 /opt/scanner/enhance_summary.py "$OUT"
 python3 /opt/scanner/render_report.py "$OUT"
