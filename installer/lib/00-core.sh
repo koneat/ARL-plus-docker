@@ -64,12 +64,46 @@ validate_env() {
   fi
 }
 
+apt_common_options=(
+  -o DPkg::Lock::Timeout=300
+  -o Binary::apt-get::DPkg::Lock::Timeout=300
+  -o Acquire::Retries=5
+  -o Acquire::Languages=none
+)
+
+apt_update_resilient() {
+  local attempt max_attempts=6 delay_seconds
+
+  for attempt in $(seq 1 "$max_attempts"); do
+    if apt-get "${apt_common_options[@]}" update; then
+      return 0
+    fi
+
+    if (( attempt == max_attempts )); then
+      break
+    fi
+
+    delay_seconds=$((attempt * 5))
+    warn "APT 索引更新失败（第 ${attempt}/${max_attempts} 次），可能是镜像同步中；清理损坏索引后 ${delay_seconds} 秒重试"
+
+    rm -rf /var/lib/apt/lists/partial/*
+    find /var/lib/apt/lists -maxdepth 1 -type f \
+      \( -name '*Translation*' -o -name '*i18n*' \) -delete 2>/dev/null || true
+    apt-get clean || true
+    sleep "$delay_seconds"
+  done
+
+  die "APT 索引连续 ${max_attempts} 次更新失败；请检查 Ubuntu 镜像状态或更换镜像"
+}
+
 apt_run() {
-  apt-get \
-    -o DPkg::Lock::Timeout=300 \
-    -o Binary::apt-get::DPkg::Lock::Timeout=300 \
-    -o Acquire::Retries=5 \
-    "$@"
+  if [[ "${1:-}" == "update" ]]; then
+    shift
+    apt_update_resilient "$@"
+    return
+  fi
+
+  apt-get "${apt_common_options[@]}" "$@"
 }
 
 install_base_packages() {
