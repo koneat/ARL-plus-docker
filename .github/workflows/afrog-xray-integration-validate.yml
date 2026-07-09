@@ -133,11 +133,12 @@ jobs:
           assert result['status']['xray']['status'] == 'executed_via_proxy', result
           assert len(result['findings']) == 1, result
           finding = result['findings'][0]
-          assert finding['plg_name'] == 'afrog:demo-poc', finding
+          assert finding['plg_name'] == 'afrog', finding
           assert finding['plg_type'] == 'poc', finding
           assert finding['vul_name'] == 'Demo Finding', finding
           assert finding['app_name'] == 'Afrog', finding
           assert finding['template_id'] == 'demo-poc', finding
+          assert finding['poc_id'] == 'demo-poc', finding
           assert finding['vuln_name'] == 'Demo Finding', finding
           assert finding['vuln_severity'] == 'high', finding
           assert finding['vuln_url'] == 'https://example.test/admin', finding
