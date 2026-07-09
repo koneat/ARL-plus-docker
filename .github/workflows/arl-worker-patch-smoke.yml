@@ -1,0 +1,41 @@
+name: arl-worker-patch-smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'enhanced-worker/**'
+      - '.github/workflows/arl-worker-patch-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  production-image-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch and import production ARL task code
+        run: |
+          set -euo pipefail
+          docker pull -q ki9mu/arl-ki9mu:v3.0.1 >/dev/null
+          docker run --rm \
+            -v "$PWD/enhanced-worker:/patch:ro" \
+            -v "$PWD/scanner/wordlists:/wordlists:ro" \
+            ki9mu/arl-ki9mu:v3.0.1 sh -ec '
+              cp /patch/patch_worker.py /tmp/patch_worker.py
+              cp /patch/nuclei_scan.py /tmp/nuclei_scan.py
+              cp /patch/afrog_scan.py /tmp/afrog_scan.py
+              python3.6 /tmp/patch_worker.py \
+                --file-dict /wordlists/high-value-paths.txt \
+                --domain-dict /patch/high-value-subdomains.txt \
+                --nuclei-adapter /tmp/nuclei_scan.py \
+                --afrog-adapter /tmp/afrog_scan.py
+              python3.6 -m py_compile \
+                /code/app/services/afrog_scan.py \
+                /code/app/services/commonTask.py
+              python3.6 -c "from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch; print(\"production-task-hook-ok\")"
+              grep -q "def afrog_scan(self):" /code/app/services/commonTask.py
+              grep -q "self.run_func(\"afrog_scan\", self.afrog_scan)" /code/app/services/commonTask.py
+            '
