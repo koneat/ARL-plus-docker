@@ -33,7 +33,7 @@ main() {
   require_root
   validate_env
 
-  log "开始完整部署：ARL + MCP + VLESS + Xray + Afrog"
+  log "开始完整部署：ARL + MCP + 持久化 Worker + VLESS/Xray + 独立 Scanner"
   install_base_packages
   install_docker_if_needed
   configure_firewall
@@ -46,12 +46,15 @@ main() {
   validate_compose
   deploy_services
   verify_services
-  install_smart_wildcard
+
+  # 先取得容器网络和代理健康状态，再构建 Worker，保证 Afrog 代理参数可靠。
   detect_docker_gateway
   install_xray_core
+  install_worker_variant
+
+  # Worker 已带持久化 PySocks 后，再写入 ARL 代理并切换 Web/Scheduler 运行时。
   set_arl_http_proxy
   install_chaitin_xray
-  install_afrog_and_rad
   prepare_scanner_stack
   verify_full_stack
 }
