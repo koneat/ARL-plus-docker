@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REAL_INDEXER='/usr/local/libexec/arl-report-index-real'
+REPORT_ROOT="${ARL_REPORT_ROOT:-/var/lib/arl-reports}"
+
+[[ -x "$REAL_INDEXER" ]] || {
+  echo "[ERROR] 统一报告索引器不存在：$REAL_INDEXER" >&2
+  exit 1
+}
+
+"$REAL_INDEXER" "$@"
+
+python3.6 - "$REPORT_ROOT" <<'PY'
+from __future__ import print_function
+
+import io
+import os
+import sys
+
+root = os.path.abspath(sys.argv[1])
+source = os.path.join(root, "index.html")
+xray_dir = os.path.join(root, "xray")
+target = os.path.join(xray_dir, "index.html")
+
+if not os.path.isfile(source):
+    raise SystemExit("统一报告首页不存在：{}".format(source))
+
+with io.open(source, "r", encoding="utf-8") as handle:
+    content = handle.read()
+
+# /xray/index.html 与旧 /report/index.html 共用同一份页面。
+# base 保证页面内的 Xray、Afrog、详情和历史报告链接仍指向 /report/。
+if '<base href="/report/">' not in content:
+    if "<head>" in content:
+        content = content.replace("<head>", '<head>\n<base href="/report/">', 1)
+    else:
+        content = '<base href="/report/">\n' + content
+
+if 'data-primary-entry="/xray/index.html"' not in content:
+    marker = '<body><main>'
+    badge = (
+        '<div data-primary-entry="/xray/index.html" '
+        'style="margin-bottom:12px;color:#6b7280">'
+        '主入口：<strong>/xray/index.html</strong></div>'
+    )
+    if marker in content:
+        content = content.replace(marker, marker + badge, 1)
+
+os.makedirs(xray_dir, exist_ok=True)
+temporary = target + ".tmp"
+with io.open(temporary, "w", encoding="utf-8") as handle:
+    handle.write(content)
+os.replace(temporary, target)
+os.chmod(target, 0o640)
+PY
