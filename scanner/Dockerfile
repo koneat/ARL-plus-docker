@@ -61,6 +61,7 @@ COPY \
   uncover_assets.py \
   extract_api_surface.py \
   asset_intelligence.py \
+  sanitize_url_targets.py \
   content_audit.py \
   nuclei_report.py \
   summarize.py \
