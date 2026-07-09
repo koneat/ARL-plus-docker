@@ -40,14 +40,27 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          sudo groupadd --system arl-xray-ci
-          sudo useradd --system --gid arl-xray-ci --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home arl-xray-ci
 
-          root=/tmp/arl-reports-ci
-          sudo install -d -o root -g root -m 0711 "$root"
-          sudo install -d -o arl-xray-ci -g arl-xray-ci -m 0750 "$root/xray" "$root/xray/history"
-          sudo -u arl-xray-ci test -x "$root"
-          sudo -u arl-xray-ci test -w "$root/xray"
-          sudo -u arl-xray-ci sh -c 'printf old > /tmp/arl-reports-ci/xray/proxy.html'
-          sudo -u arl-xray-ci sh -c 'mv /tmp/arl-reports-ci/xray/proxy.html /tmp/arl-reports-ci/xray/history/proxy-test.html'
+          group='arl-xray-ci'
+          user='arl-xray-ci'
+          getent group "$group" >/dev/null 2>&1 || sudo groupadd --system "$group"
+          id "$user" >/dev/null 2>&1 || sudo useradd \
+            --system \
+            --gid "$group" \
+            --home-dir /nonexistent \
+            --shell /usr/sbin/nologin \
+            --no-create-home \
+            "$user"
+
+          root="$(mktemp -d /tmp/arl-reports-ci.XXXXXX)"
+          trap 'sudo rm -rf "$root"' EXIT
+          sudo chown root:root "$root"
+          sudo chmod 0711 "$root"
+          sudo install -d -o "$user" -g "$group" -m 0750 \
+            "$root/xray" "$root/xray/history"
+
+          sudo -u "$user" test -x "$root"
+          sudo -u "$user" test -w "$root/xray"
+          sudo -u "$user" sh -c "printf old > '$root/xray/proxy.html'"
+          sudo -u "$user" sh -c "mv '$root/xray/proxy.html' '$root/xray/history/proxy-test.html'"
           test -s "$root/xray/history/proxy-test.html"
