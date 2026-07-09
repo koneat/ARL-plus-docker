@@ -24,6 +24,7 @@ services:
           - ./poc:/opt/ARL-NPoC/xing/plugins/upload_poc
           - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/code/frontend/report:ro"
           - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}/xray:/code/frontend/xray:ro"
+          - ./scan-results:/code/frontend/report/scanner:ro
           - ./web-ui/patch-xray-entry.sh:/usr/local/bin/patch-xray-entry.sh:ro
         entrypoint: ["sh", "-c", "sh /usr/local/bin/patch-xray-entry.sh; gen_crt.sh; nginx; wait-for-it.sh mongodb:27017; wait-for-it.sh rabbitmq:5672; gunicorn -b 0.0.0.0:5003 app.main:arl_app -w 3 --access-logfile arl_web.log --access-logformat '%({x-real-ip}i)s %(l)s %(u)s %(t)s \"%(r)s\" %(s)s %(b)s \"%(f)s\" \"%(a)s\"'"]
         environment:
@@ -93,8 +94,97 @@ services:
         - LANG=en_US.UTF-8
         - TZ=Asia/Shanghai
 
+    scanner-v2:
+      build:
+        context: ./scanner
+        args:
+          NUCLEI_VERSION: ${NUCLEI_VERSION:-v3.11.0}
+          HTTPX_VERSION: ${HTTPX_VERSION:-v1.9.0}
+          NAABU_VERSION: ${NAABU_VERSION:-v2.6.1}
+          KATANA_VERSION: ${KATANA_VERSION:-v1.6.1}
+          SUBFINDER_VERSION: ${SUBFINDER_VERSION:-v2.14.0}
+          DNSX_VERSION: ${DNSX_VERSION:-v1.2.3}
+          AFROG_VERSION: ${AFROG_VERSION:-v3.5.3}
+          FFUF_VERSION: ${FFUF_VERSION:-v2.1.0}
+          UNCOVER_VERSION: ${UNCOVER_VERSION:-3f7b74af20b24a7d5477d1dc77f6ba881219b0de}
+          URLFINDER_VERSION: ${URLFINDER_VERSION:-ad920f8f07e314b4f242967565601bd77f005947}
+          TLSX_VERSION: ${TLSX_VERSION:-d13b67f3068c9c784646b57fed0e8cccb268f0f1}
+          ALTERX_VERSION: ${ALTERX_VERSION:-bae701c363da0fecf5e788322188df9f4d419bef}
+          CDNCHECK_VERSION: ${CDNCHECK_VERSION:-0adc3138f381f86cba14c75f7aa688177167a192}
+          GAU_VERSION: ${GAU_VERSION:-8201b9d1febadba98e9cb81e3f253284e8a4a88b}
+      image: ${ARL_SCANNER_V2_IMAGE:-arl-plus-scanner:2026.07-v2-control}
+      container_name: arl_scanner_v2
+      restart: unless-stopped
+      expose:
+        - "8090"
+      environment:
+        - TZ=Asia/Shanghai
+        - HOME=/root
+        - SCANNER_V2_HOST=0.0.0.0
+        - SCANNER_V2_PORT=8090
+        - SCANNER_V2_WORKERS=${SCANNER_V2_WORKERS:-1}
+        - SCANNER_V2_MAX_QUEUE=${SCANNER_V2_MAX_QUEUE:-100}
+        - SCAN_MODE=${SCAN_MODE:-standard}
+        - UPDATE_TEMPLATES=${UPDATE_TEMPLATES:-true}
+        - ENABLE_SCANNER_V2=true
+        - ENABLE_SUBFINDER=${ENABLE_SUBFINDER:-true}
+        - ENABLE_UNCOVER=${ENABLE_UNCOVER:-true}
+        - ENABLE_NAABU=${ENABLE_NAABU:-true}
+        - ENABLE_KATANA=${ENABLE_KATANA:-true}
+        - ENABLE_SOURCEMAP=${ENABLE_SOURCEMAP:-true}
+        - ENABLE_PASSIVE_URLS=${ENABLE_PASSIVE_URLS:-true}
+        - ENABLE_TLSX=${ENABLE_TLSX:-true}
+        - ENABLE_CDNCHECK=${ENABLE_CDNCHECK:-true}
+        - ENABLE_ALTERX=${ENABLE_ALTERX:-}
+        - ENABLE_SECONDARY_CRAWL=${ENABLE_SECONDARY_CRAWL:-}
+        - ENABLE_SOURCEMAP_V2=${ENABLE_SOURCEMAP_V2:-true}
+        - ENABLE_FFUF_V2=${ENABLE_FFUF_V2:-}
+        - ENABLE_CONTENT_AUDIT=${ENABLE_CONTENT_AUDIT:-true}
+        - ENABLE_NUCLEI=${ENABLE_NUCLEI:-true}
+        - ENABLE_NUCLEI_AUTOMATIC=${ENABLE_NUCLEI_AUTOMATIC:-true}
+        - ENABLE_NUCLEI_EXPOSURE=${ENABLE_NUCLEI_EXPOSURE:-true}
+        - ENABLE_NUCLEI_API=${ENABLE_NUCLEI_API:-true}
+        - ENABLE_NUCLEI_NETWORK=${ENABLE_NUCLEI_NETWORK:-true}
+        - ENABLE_NUCLEI_DNS=${ENABLE_NUCLEI_DNS:-true}
+        - ENABLE_AFROG=${ENABLE_AFROG:-true}
+        - ENABLE_FFUF=${ENABLE_FFUF:-true}
+        - UNCOVER_PROVIDER_CONFIG=${UNCOVER_PROVIDER_CONFIG:-/run/secrets/uncover-provider.yaml}
+        - UNCOVER_ENGINES=${UNCOVER_ENGINES:-auto}
+        - UNCOVER_LIMIT=${UNCOVER_LIMIT:-100}
+        - UNCOVER_RATE_LIMIT=${UNCOVER_RATE_LIMIT:-2}
+        - NUCLEI_POLICY=${NUCLEI_POLICY:-auto}
+        - NUCLEI_TEMPLATE_DIR=${NUCLEI_TEMPLATE_DIR:-/root/nuclei-templates}
+        - NUCLEI_TEMPLATE_MIN_COUNT=${NUCLEI_TEMPLATE_MIN_COUNT:-50}
+        - NUCLEI_EXCLUDE_TAGS=${NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}
+        - NUCLEI_RATE_LIMIT=${NUCLEI_RATE_LIMIT:-120}
+        - NUCLEI_TIMEOUT=${NUCLEI_TIMEOUT:-10}
+      volumes:
+        - ./scan-results:/work/results
+        - ./scanner-cache/config:/root/.config
+        - ./scanner-cache/nuclei-templates:/root/nuclei-templates
+        - ./scanner-pocs/nuclei:/opt/pocs/nuclei:ro
+        - ./scanner-pocs/afrog:/opt/pocs/afrog:ro
+        - ./scanner-secrets:/run/secrets:ro
+      cap_drop:
+        - ALL
+      security_opt:
+        - no-new-privileges:true
+      pids_limit: 512
+      ulimits:
+        nofile:
+          soft: 65535
+          hard: 65535
+      command:
+        - python3
+        - /opt/scanner/scanner_api.py
+      healthcheck:
+        test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"]
+        interval: 30s
+        timeout: 5s
+        retries: 3
+        start_period: 60s
+
     # 本机专用入口：只绑定 127.0.0.1，默认免 Token。
-    # 即使外部入口通过 Nginx/Cloudflare Tunnel 反代，也不会误判成本机请求。
     mcp-local:
       build:
         context: ./mcp
@@ -102,6 +192,7 @@ services:
       restart: unless-stopped
       depends_on:
         - web
+        - scanner-v2
       ports:
         - "${MCP_LOCAL_BIND_IP:-127.0.0.1}:${MCP_LOCAL_PORT:-5013}:5013"
       volumes:
@@ -126,6 +217,9 @@ services:
         - ARL_TOKEN=${ARL_TOKEN:-}
         - ARL_USERNAME=${ARL_USERNAME:-}
         - ARL_PASSWORD=${ARL_PASSWORD:-}
+        - SCANNER_V2_BASE_URL=http://scanner-v2:8090
+        - SCANNER_V2_TIMEOUT=${SCANNER_V2_TIMEOUT:-30}
+        - SCANNER_PUBLIC_BASE_URL=${SCANNER_PUBLIC_BASE_URL:-}
       healthcheck:
         test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5013/healthz', timeout=3)"]
         interval: 30s
@@ -134,8 +228,6 @@ services:
         start_period: 15s
 
     # 外部/反向代理入口：无条件强制 Token。
-    # 默认也只绑定 127.0.0.1，供本机 Nginx/Caddy/Cloudflare Tunnel 转发；
-    # 确需直接监听公网时，显式设置 MCP_EXTERNAL_BIND_IP=0.0.0.0。
     mcp:
       build:
         context: ./mcp
@@ -143,6 +235,7 @@ services:
       restart: unless-stopped
       depends_on:
         - web
+        - scanner-v2
       ports:
         - "${MCP_EXTERNAL_BIND_IP:-127.0.0.1}:${MCP_EXTERNAL_PORT:-5014}:5013"
       volumes:
@@ -167,6 +260,9 @@ services:
         - ARL_TOKEN=${ARL_TOKEN:-}
         - ARL_USERNAME=${ARL_USERNAME:-}
         - ARL_PASSWORD=${ARL_PASSWORD:-}
+        - SCANNER_V2_BASE_URL=http://scanner-v2:8090
+        - SCANNER_V2_TIMEOUT=${SCANNER_V2_TIMEOUT:-30}
+        - SCANNER_PUBLIC_BASE_URL=${SCANNER_PUBLIC_BASE_URL:-}
       healthcheck:
         test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5013/healthz', timeout=3)"]
         interval: 30s
@@ -185,7 +281,6 @@ services:
           - MONGO_INITDB_DATABASE=arl
           - MONGO_INITDB_ROOT_USERNAME=admin
           - MONGO_INITDB_ROOT_PASSWORD=admin
-
 
     rabbitmq:
       image: ki9mu/shadow-rabbitmq:latest

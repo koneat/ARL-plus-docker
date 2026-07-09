@@ -1,0 +1,153 @@
+name: scanner-v2-control-plane-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scanner/**'
+      - 'mcp/**'
+      - 'docker-compose.yml'
+      - 'installer/lib/30-deploy.sh'
+      - 'enhanced-worker/arl-report-index-wrapper'
+      - '.github/workflows/scanner-v2-control-plane-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell and Python syntax
+        run: |
+          set -Eeuo pipefail
+          bash -n scanner/run-nuclei-closed.sh
+          bash -n installer/lib/30-deploy.sh
+          bash -n enhanced-worker/arl-report-index-wrapper
+          python -m py_compile \
+            scanner/scanner_api.py \
+            scanner/finalize_quality.py \
+            scanner/patch_scanner_v2.py \
+            mcp/enhanced_tools.py \
+            mcp/launcher.py \
+            mcp/patch_server.py
+
+      - name: Validate Compose wiring
+        run: |
+          set -Eeuo pipefail
+          docker compose config >/tmp/compose.yml
+          grep -q '^  scanner-v2:' /tmp/compose.yml
+          grep -q 'http://scanner-v2:8090' /tmp/compose.yml
+          grep -Fq './scan-results:/code/frontend/report/scanner:ro' docker-compose.yml
+          grep -q 'target: /code/frontend/report/scanner' /tmp/compose.yml
+          grep -q 'scanner_api.py' scanner/Dockerfile
+          grep -q 'launcher.py' mcp/Dockerfile
+
+      - name: Validate MCP patch
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          cp mcp/server.py "$tmp/server.py"
+          sed "s#Path('/app/server.py')#Path('$tmp/server.py')#" mcp/patch_server.py >"$tmp/patch.py"
+          python "$tmp/patch.py"
+          grep -q 'legacy_native_restart' "$tmp/server.py"
+          grep -q 'quality_upgrade": False' "$tmp/server.py"
+          grep -q 'scanner_v2_reachable' "$tmp/server.py"
+          grep -q 'arl_submit_enhanced_scan' mcp/enhanced_tools.py
+          grep -q 'arl_get_enhanced_scan_summary' mcp/enhanced_tools.py
+
+      - name: Exercise Scanner V2 queue API
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          cat >"$tmp/fake-runner" <<'SH'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          out="$SCANNER_V2_RESULT_ROOT/$SCAN_ID"
+          mkdir -p "$out"
+          printf '{"domains":1}\n' >"$out/summary.json"
+          printf '{"status":"completed","scanner_v2":true}\n' >"$out/quality-status.json"
+          printf '{"status":"completed_zero_findings","template_count":100}\n' >"$out/nuclei-status.json"
+          printf '<html><body>ok</body></html>\n' >"$out/report.html"
+          SH
+          chmod +x "$tmp/fake-runner"
+          export SCANNER_V2_RESULT_ROOT="$tmp/results"
+          export SCANNER_V2_INPUT_ROOT="$tmp/input"
+          export SCANNER_V2_RUNNER="$tmp/fake-runner"
+          export SCANNER_V2_PORT=18090
+          export SCANNER_V2_WORKERS=1
+          python scanner/scanner_api.py >"$tmp/api.log" 2>&1 &
+          api_pid=$!
+          trap 'kill $api_pid 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18090/healthz >/dev/null && break
+            sleep 0.2
+          done
+          response="$(curl -fsS -X POST http://127.0.0.1:18090/scans \
+            -H 'Content-Type: application/json' \
+            --data '{"name":"ci","targets":"example.com","mode":"fast"}')"
+          scan_id="$(jq -r .scan_id <<<"$response")"
+          test -n "$scan_id"
+          for _ in $(seq 1 50); do
+            state="$(curl -fsS "http://127.0.0.1:18090/scans/$scan_id")"
+            status="$(jq -r .status <<<"$state")"
+            [[ "$status" == completed ]] && break
+            [[ "$status" == failed ]] && { cat "$tmp/api.log"; exit 1; }
+            sleep 0.2
+          done
+          test "$status" = completed
+          curl -fsS "http://127.0.0.1:18090/scans/$scan_id/summary" | jq -e '.quality.scanner_v2 == true'
+          test -s "$tmp/results/index.html"
+          grep -q "$scan_id/report.html" "$tmp/results/index.html"
+
+      - name: Exercise Nuclei fail-closed states
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/out"
+          cat >"$tmp/real" <<'SH'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          out="$1"
+          printf 'template_dir=/tmp/templates\ntemplate_count=100\nminimum_expected=50\n' >"$out/nuclei-template-status.txt"
+          printf 'https://example.com\n' >"$out/scan-urls.txt"
+          printf '{"template-id":"ci"}\n' >"$out/nuclei.official.jsonl"
+          cp "$out/nuclei.official.jsonl" "$out/nuclei.jsonl"
+          SH
+          chmod +x "$tmp/real"
+          sed "s#REAL_RUNNER='/opt/scanner/run-nuclei-v2-real.sh'#REAL_RUNNER='$tmp/real'#" \
+            scanner/run-nuclei-closed.sh >"$tmp/wrapper"
+          chmod +x "$tmp/wrapper"
+          "$tmp/wrapper" "$tmp/out" fast
+          jq -e '.status == "completed_findings" and .findings_count == 1' "$tmp/out/nuclei-status.json"
+
+          rm -rf "$tmp/out" && mkdir -p "$tmp/out"
+          cat >"$tmp/real-missing" <<'SH'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          out="$1"
+          printf 'template_dir=/tmp/templates\ntemplate_count=0\nminimum_expected=50\n' >"$out/nuclei-template-status.txt"
+          : >"$out/scan-urls.txt"
+          : >"$out/nuclei.jsonl"
+          SH
+          chmod +x "$tmp/real-missing"
+          sed "s#REAL_RUNNER='/opt/scanner/run-nuclei-v2-real.sh'#REAL_RUNNER='$tmp/real-missing'#" \
+            scanner/run-nuclei-closed.sh >"$tmp/wrapper-missing"
+          chmod +x "$tmp/wrapper-missing"
+          set +e
+          "$tmp/wrapper-missing" "$tmp/out" fast
+          rc=$?
+          set -e
+          test "$rc" -eq 20
+          jq -e '.status == "failed_templates_missing" and .template_count == 0' "$tmp/out/nuclei-status.json"
+
+      - name: Verify report links and installer checks
+        run: |
+          set -Eeuo pipefail
+          grep -q '/report/scanner/index.html' enhanced-worker/arl-report-index-wrapper
+          grep -q 'docker compose build --pull scanner-v2 mcp-local mcp' installer/lib/30-deploy.sh
+          grep -q 'Scanner V2 内部 API 未就绪' installer/lib/30-deploy.sh
+          grep -q 'SCANNER_V2_REPORT_URL=' installer/lib/30-deploy.sh
