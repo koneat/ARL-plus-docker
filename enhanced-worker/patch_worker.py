@@ -215,7 +215,7 @@ def parse_args():
     parser.add_argument("--file-dict", required=True)
     parser.add_argument("--domain-dict", required=True)
     parser.add_argument("--nuclei-adapter", required=True)
-    parser.add_argument("--afrog-adapter", required=True)
+    parser.add_argument("--afrog-adapter", default="/tmp/afrog_scan.py")
     return parser.parse_args()
 
 
