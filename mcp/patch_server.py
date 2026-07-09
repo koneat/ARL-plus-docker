@@ -39,6 +39,34 @@ if 'result["scanner_v2_reachable"]' not in text:
         raise SystemExit('arl_health return block not found')
     text = text.replace(old_health, new_health, 1)
 
+old_submit_tail = '''    logger.warning("audit action=submit_task name=%r target=%r", name, target[:300])
+    return await arl.request("POST", "/task/", json_body=payload)
+'''
+new_submit_tail = '''    logger.warning("audit action=submit_task name=%r target=%r", name, target[:300])
+    response = await arl.request("POST", "/task/", json_body=payload)
+    requested_but_not_guaranteed = []
+    if github_search_domain:
+        requested_but_not_guaranteed.append("github_search_domain")
+    if fetch_api_path:
+        requested_but_not_guaranteed.append("fetch_api_path")
+    return {
+        "operation": "native_arl_task",
+        "quality_upgrade": False,
+        "scanner_v2_used": False,
+        "requested_but_not_guaranteed": requested_but_not_guaranteed,
+        "warning": (
+            "原生 ARL 任务不会调用 Scanner V2；github_search_domain 与 fetch_api_path "
+            "可能被旧后端忽略。需要 Uncover、历史 URL、Katana、Sourcemap、增强 FFUF、"
+            "失败闭合 Nuclei 和 Afrog 时，请使用 arl_submit_enhanced_scan。"
+        ),
+        "arl_response": response,
+    }
+'''
+if 'operation": "native_arl_task"' not in text:
+    if old_submit_tail not in text:
+        raise SystemExit('arl_submit_task return block not found')
+    text = text.replace(old_submit_tail, new_submit_tail, 1)
+
 old_restart = '''@mcp.tool()
 async def arl_restart_task(task_ids: list[str]) -> dict[str, Any]:
     """重新下发一个或多个已结束、已停止或失败的 ARL 任务。该操作有副作用。"""
