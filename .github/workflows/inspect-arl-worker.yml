@@ -18,23 +18,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Pull production ARL image
-        run: docker pull ki9mu/arl-ki9mu:v3.0.1
+        run: docker pull -q ki9mu/arl-ki9mu:v3.0.1 >/dev/null
 
-      - name: Inspect task and service sources
+      - name: Inspect exact task hooks
         run: |
           set -euo pipefail
           cid="$(docker create ki9mu/arl-ki9mu:v3.0.1)"
           trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
           docker cp "$cid:/code/app" /tmp/arl-app
+
           echo '===== task files ====='
-          find /tmp/arl-app/tasks -maxdepth 2 -type f -print | sort
-          echo '===== nuclei references ====='
-          grep -R -n -C 8 'nuclei_scan\|NucleiScan' /tmp/arl-app/tasks /tmp/arl-app/services || true
-          echo '===== task lifecycle and result writes ====='
-          grep -R -n -E -C 5 'task_status|task_tag|vuln|plg_name|celery|scan.*finish|finish.*scan|save.*result|insert.*result' /tmp/arl-app/tasks | head -n 2500 || true
-          echo '===== domain.py ====='
-          sed -n '1,1200p' /tmp/arl-app/tasks/domain.py
-          echo '===== site.py ====='
-          test ! -f /tmp/arl-app/tasks/site.py || sed -n '1,1200p' /tmp/arl-app/tasks/site.py
-          echo '===== celerytask.py ====='
-          sed -n '1,1200p' /tmp/arl-app/celerytask.py
+          find /tmp/arl-app/tasks -maxdepth 1 -type f -printf '%f\n' | sort
+
+          echo '===== domain method index ====='
+          grep -n -E '^    def |^def ' /tmp/arl-app/tasks/domain.py || true
+
+          echo '===== nuclei task call ====='
+          grep -R -n -C 25 'nuclei_scan\|NucleiScan' /tmp/arl-app/tasks /tmp/arl-app/services || true
+
+          echo '===== vulnerability persistence ====='
+          grep -R -n -E -C 20 'plg_name|VulnAsset|vuln.*insert|insert.*vuln|save.*vuln|vuln.*save' /tmp/arl-app/tasks /tmp/arl-app/services /tmp/arl-app/modules || true
+
+          echo '===== domain run lifecycle ====='
+          grep -n -E -C 20 'def run\(|def start\(|def task\(|task_status|task_tag|scan.*finish|finish.*scan' /tmp/arl-app/tasks/domain.py || true
+
+          echo '===== celery registered tasks ====='
+          grep -n -E -C 20 '@celery.task|DomainTask|AssetTask|domain_task|asset_task' /tmp/arl-app/celerytask.py || true
