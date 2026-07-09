@@ -102,23 +102,86 @@ def install_afrog_adapter(source):
     )
 
 
+def indentation(line):
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def find_class_bounds(lines, class_name):
+    class_start = None
+    prefix = "class {}".format(class_name)
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            class_start = index
+            break
+    if class_start is None:
+        raise RuntimeError("class {} not found".format(class_name))
+
+    class_end = len(lines)
+    for index in range(class_start + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and indentation(line) == 0 and not line.lstrip().startswith("#"):
+            class_end = index
+            break
+    return class_start, class_end
+
+
+def find_method_bounds(lines, class_start, class_end, method_name):
+    method_start = None
+    prefixes = (
+        "    def {}(".format(method_name),
+        "    async def {}(".format(method_name),
+    )
+    for index in range(class_start + 1, class_end):
+        if lines[index].startswith(prefixes):
+            method_start = index
+            break
+    if method_start is None:
+        raise RuntimeError("WebSiteFetch.{} method not found".format(method_name))
+
+    method_end = class_end
+    for index in range(method_start + 1, class_end):
+        line = lines[index]
+        if line.strip() and indentation(line) <= 4 and not line.lstrip().startswith("#"):
+            method_end = index
+            break
+    return method_start, method_end
+
+
+def ensure_import(content, import_line):
+    if import_line in content:
+        return content
+
+    anchors = (
+        "from app.services.nuclei_scan import nuclei_scan\n",
+        "from app import utils\n",
+    )
+    for anchor in anchors:
+        if anchor in content:
+            return content.replace(anchor, anchor + import_line, 1)
+    raise RuntimeError("commonTask.py import anchor not found")
+
+
 def patch_common_task():
     if not os.path.isfile(COMMON_TASK):
         raise RuntimeError("required ARL source missing: {}".format(COMMON_TASK))
     content = read_text(COMMON_TASK)
 
+    if "import os\n" not in content:
+        if "import ast\n" in content:
+            content = content.replace("import ast\n", "import ast\nimport os\n", 1)
+        else:
+            content = "import os\n" + content
+
     import_line = "from app.services.afrog_scan import afrog_scan as run_afrog_scan\n"
-    nuclei_import = "from app.services.nuclei_scan import nuclei_scan\n"
-    if import_line not in content:
-        if nuclei_import not in content:
-            raise RuntimeError("commonTask.py nuclei import anchor not found")
-        content = content.replace(nuclei_import, nuclei_import + import_line, 1)
+    content = ensure_import(content, import_line)
 
     method_marker = "    def afrog_scan(self):\n"
     if method_marker not in content:
-        xray_method = "    def xray_scan(self):\n"
-        if xray_method not in content:
-            raise RuntimeError("commonTask.py xray_scan method anchor not found")
+        lines = content.splitlines(True)
+        class_start, class_end = find_class_bounds(lines, "WebSiteFetch")
+        run_start, _run_end = find_method_bounds(
+            lines, class_start, class_end, "run"
+        )
         method = '''    def afrog_scan(self):
         logger.info("start afrog_scan, poc_sites:{}".format(len(self.poc_sites)))
         result = run_afrog_scan(list(self.poc_sites), task_id=self.task_id)
@@ -152,32 +215,28 @@ def patch_common_task():
         )
 
 '''
-        content = content.replace(xray_method, method + xray_method, 1)
+        lines.insert(run_start, method)
+        content = "".join(lines)
 
     run_marker = '            self.run_func("afrog_scan", self.afrog_scan)\n'
     if run_marker not in content:
-        xray_run_block = '''        """ *** 对站点运行 xray """
-        if self.options.get(WebSiteFetchOption.XRAY_SCAN):
-            self.run_func(WebSiteFetchStatus.XRAY_SCAN, self.xray_scan)
-'''
-        if xray_run_block not in content:
-            raise RuntimeError("commonTask.py xray run block anchor not found")
+        lines = content.splitlines(True)
+        class_start, class_end = find_class_bounds(lines, "WebSiteFetch")
+        _run_start, run_end = find_method_bounds(
+            lines, class_start, class_end, "run"
+        )
         afrog_run_block = '''
         """ *** 自动运行 Afrog，并强制通过长亭 xray Webscan 代理 """
         if os.getenv("ARL_AUTO_AFROG_SCAN", "true").strip().lower() in (
                 "1", "true", "yes", "on", "enabled"):
             self.run_func("afrog_scan", self.afrog_scan)
 '''
-        content = content.replace(xray_run_block, xray_run_block + afrog_run_block, 1)
-
-    if "import os\n" not in content:
-        if "import ast\n" in content:
-            content = content.replace("import ast\n", "import ast\nimport os\n", 1)
-        else:
-            raise RuntimeError("commonTask.py import anchor not found")
+        lines.insert(run_end, afrog_run_block)
+        content = "".join(lines)
 
     required = [
         "run_afrog_scan",
+        "class WebSiteFetch",
         "def afrog_scan(self):",
         'self.run_func("afrog_scan", self.afrog_scan)',
         'utils.conn_db("vuln").insert_one(item)',
@@ -185,7 +244,9 @@ def patch_common_task():
     ]
     for marker in required:
         if marker not in content:
-            raise RuntimeError("commonTask.py Afrog integration marker missing: {}".format(marker))
+            raise RuntimeError(
+                "commonTask.py Afrog integration marker missing: {}".format(marker)
+            )
     write_text(COMMON_TASK, content)
 
 
