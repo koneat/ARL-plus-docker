@@ -40,7 +40,7 @@ api_path = Path('/opt/scanner/scanner_api.py')
 api_text = api_path.read_text(encoding='utf-8')
 api_text = api_text.replace(
     'STATE_ROOT = RESULT_ROOT / ".scanner-api"\n',
-    'STATE_ROOT = Path(os.getenv("SCANNER_V2_STATE_ROOT", "/work/state"))\n'
+    'STATE_ROOT = Path(os.getenv("SCANNER_V2_STATE_ROOT", "/root/.config/scanner-api"))\n'
     'LOG_ROOT = Path(os.getenv("SCANNER_V2_LOG_ROOT", str(STATE_ROOT / "logs")))\n',
     1,
 )
