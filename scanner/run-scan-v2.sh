@@ -10,6 +10,7 @@ export SCAN_ID
 OUT="/work/results/${SCAN_ID}"
 SCOPE_TMP="/tmp/arl-scope-${SCAN_ID}"
 NUCLEI_REQUESTED="${ENABLE_NUCLEI:-true}"
+AFROG_REQUESTED="${ENABLE_AFROG:-true}"
 
 log() {
   printf '[scanner-v2][%s] %s\n' "$(date '+%F %T')" "$*"
@@ -60,7 +61,8 @@ cp "$SCOPE_TMP/ips.txt" "$OUT/scope-ips.txt"
 cp "$SCOPE_TMP/cidrs.txt" "$OUT/scope-cidrs.txt"
 
 log "第一阶段：运行稳定基础扫描链"
-ENABLE_NUCLEI=false /opt/scanner/run-scan-uncover.sh "$TARGET_FILE" "$MODE"
+ENABLE_NUCLEI=false ENABLE_AFROG=false \
+  /opt/scanner/run-scan-uncover.sh "$TARGET_FILE" "$MODE"
 
 cp "$OUT/domains.txt" "$OUT/domains.augmented-input.txt" 2>/dev/null || true
 cp "$OUT/scope-domains.txt" "$OUT/domains.txt"
@@ -79,9 +81,17 @@ if enabled "$NUCLEI_REQUESTED"; then
   /opt/scanner/run-nuclei-v2.sh "$OUT" "$MODE"
 else
   log "Nuclei 已关闭"
-  python3 /opt/scanner/summarize.py "$OUT"
 fi
 
+if enabled "$AFROG_REQUESTED"; then
+  log "第四阶段：运行清洗后 Afrog V2"
+  /opt/scanner/run-afrog-v2.sh "$OUT" "$MODE"
+else
+  log "Afrog 已关闭"
+  : >"$OUT/afrog.json"
+fi
+
+python3 /opt/scanner/summarize.py "$OUT"
 python3 /opt/scanner/enhance_summary.py "$OUT"
 python3 /opt/scanner/render_report.py "$OUT"
 
