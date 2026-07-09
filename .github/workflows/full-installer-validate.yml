@@ -132,13 +132,25 @@ jobs:
             XRAY_SOCKS_PORT=1080 \
             XRAY_SERVICE_GROUP=arl-xray-ci \
             bash -c 'set -Eeuo pipefail; umask 077; source installer/lib/51-vless-config.sh; generate_xray_core_config'
-
-      - name: Verify Xray config ownership and modes
-        run: |
           stat -c '%A %a %U:%G %n' /tmp/xray-config-ci /tmp/xray-config-ci/config.json
-          test "$(stat -c '%a' /tmp/xray-config-ci)" = 750
-          test "$(stat -c '%a' /tmp/xray-config-ci/config.json)" = 640
-          test "$(stat -c '%U:%G' /tmp/xray-config-ci/config.json)" = root:arl-xray-ci
+
+      - name: Verify Xray config directory mode
+        run: |
+          actual="$(stat -c '%a' /tmp/xray-config-ci)"
+          echo "directory_mode=$actual"
+          test "$actual" = 750
+
+      - name: Verify Xray config file mode
+        run: |
+          actual="$(stat -c '%a' /tmp/xray-config-ci/config.json)"
+          echo "file_mode=$actual"
+          test "$actual" = 640
+
+      - name: Verify Xray config ownership
+        run: |
+          actual="$(stat -c '%U:%G' /tmp/xray-config-ci/config.json)"
+          echo "ownership=$actual"
+          test "$actual" = root:arl-xray-ci
 
       - name: Verify Xray service account can read config
         run: |
