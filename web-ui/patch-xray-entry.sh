@@ -2,7 +2,29 @@
 set -eu
 
 INDEX_FILE="${ARL_FRONTEND_INDEX:-/code/frontend/index.html}"
+REPORT_WEB_ROOT="${ARL_REPORT_WEB_ROOT:-/code/frontend/report}"
+XRAY_WEB_ROOT="${ARL_XRAY_WEB_ROOT:-/code/frontend/xray}"
 MARKER='arl-xray-report-entry'
+
+# 不再把宿主机 xray 子目录嵌套挂载到只读 report 挂载点旁边。
+# 使用容器内软链接让 /xray/* 与 /report/xray/* 始终读取同一份文件，
+# 避免 Docker 嵌套挂载、目录遮蔽和权限状态不一致。
+if [ -d "$REPORT_WEB_ROOT/xray" ]; then
+  if [ -L "$XRAY_WEB_ROOT" ]; then
+    current_target="$(readlink "$XRAY_WEB_ROOT" 2>/dev/null || true)"
+    if [ "$current_target" != "$REPORT_WEB_ROOT/xray" ]; then
+      rm -f "$XRAY_WEB_ROOT"
+    fi
+  elif [ -e "$XRAY_WEB_ROOT" ]; then
+    if ! rmdir "$XRAY_WEB_ROOT" 2>/dev/null; then
+      echo "[WARN] 无法替换非空 Xray Web 目录：$XRAY_WEB_ROOT" >&2
+    fi
+  fi
+
+  if [ ! -e "$XRAY_WEB_ROOT" ] && [ ! -L "$XRAY_WEB_ROOT" ]; then
+    ln -s "$REPORT_WEB_ROOT/xray" "$XRAY_WEB_ROOT"
+  fi
+fi
 
 if [ ! -f "$INDEX_FILE" ]; then
   echo "[WARN] ARL 前端首页不存在，跳过漏洞报告入口注入：$INDEX_FILE" >&2
