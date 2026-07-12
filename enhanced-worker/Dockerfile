@@ -5,13 +5,16 @@ ARG AFROG_VERSION=v3.5.3
 ARG RAD_VERSION=1.0
 ARG INSTALL_CHROMIUM=true
 ARG ARL_MERGE_FULL_DOMAIN_WORDLIST=false
+ARG WIH_ALLOW_UNVERIFIED_KEYS=false
+ARG ARL_FILE_LEAK_MIN_DICTIONARY=40
 
 LABEL org.opencontainers.image.title="ARL Persistent Enhanced Worker" \
-      org.opencontainers.image.description="ARL worker with smart wildcard filtering, robust Nuclei output, automatic Afrog via Chaitin xray, Chromium, libpcap, PySocks, RAD and repository-vendored wordlists"
+      org.opencontainers.image.description="ARL worker with smart wildcard filtering, strict WIH/file-leak quality filtering, robust Nuclei output, automatic Afrog via Chaitin xray, Chromium, libpcap, PySocks, RAD and repository-vendored wordlists"
 
 COPY smart-worker/app/services/wildcardSmart.py /code/app/services/wildcardSmart.py
 COPY smart-worker/patch_arl.py /tmp/patch_arl.py
 COPY enhanced-worker/patch_worker.py /tmp/patch_worker.py
+COPY enhanced-worker/quality_hardening.py /tmp/quality_hardening.py
 COPY enhanced-worker/nuclei_scan.py /tmp/nuclei_scan.py
 COPY enhanced-worker/afrog_scan.py /tmp/afrog_scan.py
 COPY enhanced-worker/high-value-subdomains.txt /tmp/high-value-subdomains.txt
@@ -32,7 +35,11 @@ RUN chmod 0755 /tmp/install_tools.sh && \
     INSTALL_CHROMIUM="${INSTALL_CHROMIUM}" \
     ARL_MERGE_FULL_DOMAIN_WORDLIST="${ARL_MERGE_FULL_DOMAIN_WORDLIST}" \
     /tmp/install_tools.sh && \
+    WIH_ALLOW_UNVERIFIED_KEYS="${WIH_ALLOW_UNVERIFIED_KEYS}" \
+    ARL_FILE_LEAK_MIN_DICTIONARY="${ARL_FILE_LEAK_MIN_DICTIONARY}" \
+    python3.6 /tmp/quality_hardening.py && \
+    python3.6 -m py_compile /tmp/quality_hardening.py /code/app/services/infoHunter.py && \
     install -d -m 0755 /usr/local/libexec && \
     mv /usr/local/bin/arl-report-index /usr/local/libexec/arl-report-index-real && \
     install -m 0755 /tmp/arl-report-index-wrapper /usr/local/bin/arl-report-index && \
-    rm -f /tmp/arl-report-index-wrapper /tmp/install_tools.sh
+    rm -f /tmp/quality_hardening.py /tmp/arl-report-index-wrapper /tmp/install_tools.sh

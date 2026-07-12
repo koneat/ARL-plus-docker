@@ -1,0 +1,97 @@
+name: result-quality-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'enhanced-worker/quality_hardening.py'
+      - 'enhanced-worker/Dockerfile'
+      - 'docker-compose.enhanced-worker.yml'
+      - '.github/workflows/result-quality-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  strict-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Python syntax and Docker wiring
+        run: |
+          set -Eeuo pipefail
+          python -m py_compile enhanced-worker/quality_hardening.py
+          grep -Fq 'COPY enhanced-worker/quality_hardening.py /tmp/quality_hardening.py' enhanced-worker/Dockerfile
+          grep -Fq 'python3.6 /tmp/quality_hardening.py' enhanced-worker/Dockerfile
+          grep -Fq 'WIH_ALLOW_UNVERIFIED_KEYS: ${WIH_ALLOW_UNVERIFIED_KEYS:-false}' docker-compose.enhanced-worker.yml
+          grep -Fq 'ARL_FILE_LEAK_MIN_DICTIONARY: ${ARL_FILE_LEAK_MIN_DICTIONARY:-40}' docker-compose.enhanced-worker.yml
+
+      - name: Test high-signal file dictionary and WIH validation
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          import importlib.util
+          import os
+          import tempfile
+          from pathlib import Path
+
+          spec = importlib.util.spec_from_file_location(
+              'quality_hardening', 'enhanced-worker/quality_hardening.py'
+          )
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          root = Path(tempfile.mkdtemp())
+          dictionary = root / 'file_top_2000.txt'
+          info_hunter = root / 'infoHunter.py'
+          dictionary.write_text('\n'.join([
+              '.env',
+              '.git/config',
+              'backup.zip',
+              'swagger.json',
+              'actuator/env',
+              'static/js/app.js',
+              'robots.txt',
+              'health',
+              'package.json',
+              'admin',
+              'random.html',
+              'logs/error.log',
+              'app.js.map',
+          ]) + '\n')
+          info_hunter.write_text(
+              'args = [\n'
+              '    "-J",\n'
+              '    "-f",\n'
+              '    "--dc",\n'
+              ']\n'
+          )
+
+          module.FILE_DICT = str(dictionary)
+          module.INFO_HUNTER = str(info_hunter)
+          os.environ['ARL_FILE_LEAK_MIN_DICTIONARY'] = '5'
+          os.environ.pop('WIH_ALLOW_UNVERIFIED_KEYS', None)
+
+          before, after = module.filter_file_dictionary()
+          assert before == 13, (before, after)
+          assert after == 7, dictionary.read_text()
+          values = set(dictionary.read_text().splitlines())
+          assert '.env' in values
+          assert '.git/config' in values
+          assert 'backup.zip' in values
+          assert 'swagger.json' in values
+          assert 'actuator/env' in values
+          assert 'logs/error.log' in values
+          assert 'app.js.map' in values
+          assert 'robots.txt' not in values
+          assert 'health' not in values
+          assert 'package.json' not in values
+          assert 'admin' not in values
+          assert 'static/js/app.js' not in values
+
+          state = module.harden_info_hunter()
+          assert state == 'cloud-key-validation-enabled', state
+          assert '--dc' not in info_hunter.read_text()
+          print('result-quality-tests-ok')
+          PY

@@ -29,6 +29,8 @@ if not os.path.isfile(source):
 with io.open(source, "r", encoding="utf-8") as handle:
     content = handle.read()
 
+# /xray/index.html 与 /report/index.html 使用同一份索引。
+# base 保证从 /xray/ 入口打开后，Afrog、Xray、Scanner 链接仍落到 /report/。
 if '<base href="/report/">' not in content:
     if "<head>" in content:
         content = content.replace("<head>", '<head>\n<base href="/report/">', 1)
@@ -54,10 +56,39 @@ elif '/report/scanner/index.html' not in content:
     if primary >= 0 and end >= 0:
         content = content[:end] + link + content[end:]
 
+# 避免把“每条漏洞证据页”误解成 Afrog 完整报告。
+content = content.replace(
+    "统一漏洞明细",
+    "单条漏洞证据（用于定位；任务完整报告请从执行状态或上方按钮打开）",
+)
+content = content.replace("查看漏洞详情", "查看单条漏洞证据")
+content = content.replace("打开 Afrog 最新完整报告", "打开 Afrog 最新任务完整报告")
+content = content.replace(
+    "Afrog 按单个漏洞生成可点击详情页；",
+    "Afrog 每个扫描任务保留一份完整报告，单条漏洞仅生成定位证据页；",
+)
+
 os.makedirs(xray_dir, exist_ok=True)
 temporary = target + ".tmp"
 with io.open(temporary, "w", encoding="utf-8") as handle:
     handle.write(content)
 os.replace(temporary, target)
-os.chmod(target, 0o640)
+
+# Web 容器与宿主机 xray 服务不共享 UID/GID。静态发布文件必须对 Nginx
+# 可读，否则文件存在时仍会返回 403。只放宽报告目录和报告类文件，不修改
+# xray 配置、证书或其他宿主机文件权限。
+for current_root, directories, files in os.walk(root):
+    try:
+        os.chmod(current_root, 0o755)
+    except OSError:
+        pass
+    for name in files:
+        lowered = name.lower()
+        if not lowered.endswith((".html", ".json", ".txt", ".csv")):
+            continue
+        path = os.path.join(current_root, name)
+        try:
+            os.chmod(path, 0o644)
+        except OSError:
+            pass
 PY

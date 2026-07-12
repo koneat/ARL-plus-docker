@@ -9,6 +9,7 @@ on:
       - 'enhanced-worker/arl-report-index-wrapper'
       - 'enhanced-worker/Dockerfile'
       - 'installer/lib/40-reports.sh'
+      - 'installer/lib/61-chaitin-xray.sh'
       - '.github/workflows/xray-index-entry-validate.yml'
 
 permissions:
@@ -26,35 +27,52 @@ jobs:
           bash -n web-ui/patch-xray-entry.sh
           bash -n enhanced-worker/arl-report-index-wrapper
           bash -n installer/lib/40-reports.sh
-          grep -Fq '${ARL_REPORT_ROOT:-/var/lib/arl-reports}/xray:/code/frontend/xray:ro' docker-compose.yml
+          bash -n installer/lib/61-chaitin-xray.sh
+          grep -Fq '${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/code/frontend/report:ro' docker-compose.yml
+          ! grep -Fq '${ARL_REPORT_ROOT:-/var/lib/arl-reports}/xray:/code/frontend/xray:ro' docker-compose.yml
           grep -Fq './web-ui/patch-xray-entry.sh:/usr/local/bin/patch-xray-entry.sh:ro' docker-compose.yml
           grep -Fq 'sh /usr/local/bin/patch-xray-entry.sh' docker-compose.yml
+          grep -Fq 'UMask=0022' installer/lib/61-chaitin-xray.sh
+          grep -Fq 'find "$REPORT_ROOT" -type d -exec chmod 0755' installer/lib/40-reports.sh
           grep -Fq 'COPY enhanced-worker/arl-report-index-wrapper /tmp/arl-report-index-wrapper' enhanced-worker/Dockerfile
           grep -Fq 'mv /usr/local/bin/arl-report-index /usr/local/libexec/arl-report-index-real' enhanced-worker/Dockerfile
 
-      - name: Test ARL frontend button injection
+      - name: Test ARL frontend button and xray symlink
         run: |
           set -Eeuo pipefail
           tmp="$(mktemp -d)"
-          printf '<!doctype html><html><body><div id="app"></div></body></html>\n' >"$tmp/index.html"
-          ARL_FRONTEND_INDEX="$tmp/index.html" sh web-ui/patch-xray-entry.sh
-          grep -Fq 'id="arl-xray-report-entry"' "$tmp/index.html"
-          grep -Fq 'href="/xray/index.html"' "$tmp/index.html"
-          ARL_FRONTEND_INDEX="$tmp/index.html" sh web-ui/patch-xray-entry.sh
-          test "$(grep -Fc 'id="arl-xray-report-entry"' "$tmp/index.html")" -eq 1
+          mkdir -p "$tmp/frontend/report/xray"
+          printf '<!doctype html><html><body><div id="app"></div></body></html>\n' >"$tmp/frontend/index.html"
+          ARL_FRONTEND_INDEX="$tmp/frontend/index.html" \
+          ARL_REPORT_WEB_ROOT="$tmp/frontend/report" \
+          ARL_XRAY_WEB_ROOT="$tmp/frontend/xray" \
+            sh web-ui/patch-xray-entry.sh
+          test -L "$tmp/frontend/xray"
+          test "$(readlink "$tmp/frontend/xray")" = "$tmp/frontend/report/xray"
+          grep -Fq 'id="arl-xray-report-entry"' "$tmp/frontend/index.html"
+          grep -Fq 'href="/xray/index.html"' "$tmp/frontend/index.html"
+          ARL_FRONTEND_INDEX="$tmp/frontend/index.html" \
+          ARL_REPORT_WEB_ROOT="$tmp/frontend/report" \
+          ARL_XRAY_WEB_ROOT="$tmp/frontend/xray" \
+            sh web-ui/patch-xray-entry.sh
+          test "$(grep -Fc 'id="arl-xray-report-entry"' "$tmp/frontend/index.html")" -eq 1
 
-      - name: Test Xray primary index publishing
+      - name: Test Xray primary index publishing and permissions
         run: |
           set -Eeuo pipefail
           tmp="$(mktemp -d)"
-          mkdir -p "$tmp/libexec" "$tmp/reports/xray"
+          mkdir -p "$tmp/libexec" "$tmp/reports/xray" "$tmp/reports/afrog/details"
           cat >"$tmp/libexec/real" <<'SH'
           #!/usr/bin/env bash
           set -Eeuo pipefail
-          mkdir -p "$ARL_REPORT_ROOT/xray" "$ARL_REPORT_ROOT/afrog"
+          mkdir -p "$ARL_REPORT_ROOT/xray" "$ARL_REPORT_ROOT/afrog/details"
           cat >"$ARL_REPORT_ROOT/index.html" <<'HTML'
-          <!doctype html><html><head><meta charset="utf-8"></head><body><main><a href="xray/proxy.html">Xray</a><a href="afrog/index.html">Afrog</a></main></body></html>
+          <!doctype html><html><head><meta charset="utf-8"></head><body><main><h2>统一漏洞明细</h2><a>查看漏洞详情</a><a>打开 Afrog 最新完整报告</a></main></body></html>
           HTML
+          printf '<html>xray</html>\n' >"$ARL_REPORT_ROOT/xray/proxy.html"
+          printf '{}\n' >"$ARL_REPORT_ROOT/afrog/demo.status.json"
+          chmod 0750 "$ARL_REPORT_ROOT/xray" "$ARL_REPORT_ROOT/afrog"
+          chmod 0640 "$ARL_REPORT_ROOT/index.html" "$ARL_REPORT_ROOT/xray/proxy.html" "$ARL_REPORT_ROOT/afrog/demo.status.json"
           SH
           chmod +x "$tmp/libexec/real"
           sed \
@@ -66,10 +84,13 @@ jobs:
           test -s "$tmp/reports/xray/index.html"
           grep -Fq '<base href="/report/">' "$tmp/reports/xray/index.html"
           grep -Fq 'data-primary-entry="/xray/index.html"' "$tmp/reports/xray/index.html"
+          grep -Fq '查看单条漏洞证据' "$tmp/reports/xray/index.html"
+          test "$(stat -c '%a' "$tmp/reports/xray")" = 755
+          test "$(stat -c '%a' "$tmp/reports/xray/proxy.html")" = 644
+          test "$(stat -c '%a' "$tmp/reports/afrog/demo.status.json")" = 644
 
       - name: Verify legacy report compatibility
         run: |
           set -Eeuo pipefail
-          grep -Fq '${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/code/frontend/report:ro' docker-compose.yml
           grep -Fq '(root / "index.html").write_text(root_index' installer/lib/40-reports.sh
           grep -Fq '(xray / "index.html").write_text(root_index' installer/lib/40-reports.sh

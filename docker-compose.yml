@@ -23,7 +23,6 @@ services:
           - ./image:/code/app/tmp_screenshot
           - ./poc:/opt/ARL-NPoC/xing/plugins/upload_poc
           - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/code/frontend/report:ro"
-          - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}/xray:/code/frontend/xray:ro"
           - ./web-ui/patch-xray-entry.sh:/usr/local/bin/patch-xray-entry.sh:ro
         entrypoint: ["sh", "-c", "sh /usr/local/bin/patch-xray-entry.sh; gen_crt.sh; nginx; wait-for-it.sh mongodb:27017; wait-for-it.sh rabbitmq:5672; gunicorn -b 0.0.0.0:5003 app.main:arl_app -w 3 --access-logfile arl_web.log --access-logformat '%({x-real-ip}i)s %(l)s %(u)s %(t)s \"%(r)s\" %(s)s %(b)s \"%(f)s\" \"%(a)s\"'"]
         environment:
@@ -44,6 +43,7 @@ services:
           - ./poc:/opt/ARL-NPoC/xing/plugins/upload_poc
           - "${ARL_REPORT_ROOT:-/var/lib/arl-reports}:/var/lib/arl-reports"
         entrypoint: ["sh", "-c", "wait-for-it.sh mongodb:27017; wait-for-it.sh rabbitmq:5672;
+        if [ -x /usr/local/bin/arl-report-index ]; then ARL_REPORT_ROOT=/var/lib/arl-reports /usr/local/bin/arl-report-index || true; fi;
         celery -A app.celerytask.celery worker -l info -Q arlgithub -n arlgithub -c 2 -O fair -f arl_worker.log &
          celery -A app.celerytask.celery worker -l info -Q arltask -n arltask -c 2 -O fair -f arl_worker.log"]
 

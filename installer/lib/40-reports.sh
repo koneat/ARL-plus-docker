@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 
 prepare_reports() {
-  install -d -m 0755 "$REPORT_ROOT" "$REPORT_ROOT/xray" "$REPORT_ROOT/afrog"
+  install -d -m 0755 "$REPORT_ROOT" "$REPORT_ROOT/xray" "$REPORT_ROOT/xray/history" "$REPORT_ROOT/afrog"
 
   if [[ ! -f "$REPORT_ROOT/xray/proxy.html" ]]; then
     cat > "$REPORT_ROOT/xray/proxy.html" <<'HTML'
@@ -43,7 +43,8 @@ afrog_index = f"""<!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>Afrog 扫描报告</title></head>
 <body>
-<h1>Afrog 扫描报告</h1>
+<h1>Afrog 扫描任务完整报告</h1>
+<p>这里每个文件对应一次 Afrog 扫描任务，不是一个漏洞一个“完整报告”。</p>
 <ul>
 {''.join(items) if items else '<li>目前还没有 Afrog 报告</li>'}
 </ul>
@@ -64,7 +65,7 @@ root_index = """<!doctype html>
 <p>主入口：<strong>/xray/index.html</strong></p>
 <ul>
 <li><a href="xray/proxy.html">长亭 xray 实时报告</a></li>
-<li><a href="afrog/index.html">Afrog 历史报告</a></li>
+<li><a href="afrog/index.html">Afrog 扫描任务完整报告</a></li>
 </ul>
 </body>
 </html>
@@ -74,15 +75,20 @@ root_index = """<!doctype html>
 PY
   chmod 0755 /usr/local/bin/arl-report-index
   ARL_REPORT_ROOT="$REPORT_ROOT" /usr/local/bin/arl-report-index
+
+  # 报告已通过 ARL Web 静态目录发布。Web 容器与宿主机 xray 用户通常
+  # 不共享 UID/GID，因此 HTML/JSON 必须具备跨容器只读权限，否则会 403。
+  find "$REPORT_ROOT" -type d -exec chmod 0755 {} +
+  find "$REPORT_ROOT" -type f \( -name '*.html' -o -name '*.json' -o -name '*.txt' -o -name '*.csv' \) -exec chmod 0644 {} +
+
   if [[ "$REPORT_WORLD_READABLE" == "true" ]]; then
     chmod -R a+rX "$REPORT_ROOT"
     warn "扫描报告已设为宿主机全局可读；报告可能包含敏感资产信息"
   else
-    # 父目录仅允许路径穿越，普通用户无法列目录或读取报告内容。
-    # 长亭 xray 的独立服务账户需要穿过 REPORT_ROOT 才能访问自己的 xray 子目录。
-    chmod 0711 "$REPORT_ROOT"
-    find "$REPORT_ROOT" -mindepth 1 -type d -exec chmod 0750 {} +
-    find "$REPORT_ROOT" -type f -exec chmod 0640 {} +
+    # 非静态报告文件仍保持仅属主/属组可读；Web 会读取的报告格式已单独设为 0644。
+    find "$REPORT_ROOT" -type f \
+      ! -name '*.html' ! -name '*.json' ! -name '*.txt' ! -name '*.csv' \
+      -exec chmod 0640 {} +
   fi
   ok "报告目录已准备：$REPORT_ROOT；主入口：https://服务器IP:5003/xray/index.html"
 }
