@@ -15,6 +15,7 @@
 - FOFA 返回的关联 IP、历史地址或第三方托管结果不会自动扩大主动扫描范围。
 - `EDGE_INTEL_FEED_SCAN` 默认是 `false`。只有显式设置为 `true` 时，范围内的 HTTP URL 才会加入当前扫描 URL 列表。
 - 外部域名不会写入 `edge-hosts.txt` 或 `edge-urls.txt`。
+- 优先使用任务原始根域 `domains.txt`；只有该文件为空时才回退到 `domains.all.txt`，避免把已发现子域误当成独立检索根域。
 
 ## 凭据配置
 
@@ -44,7 +45,7 @@ GitHub Token 只需要读取公开代码搜索与文件内容所需的最小权�
 
 ```text
 ENABLE_EDGE_INTELLIGENCE=true
-EDGE_GITHUB_MAX_QUERIES=36
+EDGE_GITHUB_MAX_QUERIES=10
 EDGE_GITHUB_MAX_FILES=80
 EDGE_FOFA_MAX_RESULTS=500
 EDGE_INTEL_TIMEOUT=12
@@ -54,6 +55,8 @@ GITHUB_TOKEN_FILE=/run/secrets/github_token
 FOFA_EMAIL_FILE=/run/secrets/fofa_email
 FOFA_KEY_FILE=/run/secrets/fofa_key
 ```
+
+GitHub Code Search 默认限制为 10 个平衡查询，按照“裸域名、Actions、Staging、Dev、UAT、Preprod”在多个根域之间轮转，降低单个根域耗尽搜索配额的概率。
 
 缺少 GitHub 或 FOFA 凭据时，模块会记录数据源状态并继续执行，不会中断 Scanner V2。
 
