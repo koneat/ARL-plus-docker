@@ -72,8 +72,8 @@ install_chaitin_xray() {
       arl-xray
   fi
 
-  install -d -o root -g root -m 0711 "$REPORT_ROOT"
-  install -d -o arl-xray -g arl-xray -m 0750 \
+  install -d -o root -g root -m 0755 "$REPORT_ROOT"
+  install -d -o arl-xray -g arl-xray -m 0755 \
     "$REPORT_ROOT/xray" \
     "$REPORT_ROOT/xray/history"
 
@@ -85,10 +85,11 @@ install_chaitin_xray() {
   fi
 
   chown -R arl-xray:arl-xray "$CHAITIN_XRAY_DIR" "$REPORT_ROOT/xray"
-  chmod 0711 "$REPORT_ROOT"
-  chmod 0750 "$CHAITIN_XRAY_DIR" "$REPORT_ROOT/xray" "$REPORT_ROOT/xray/history"
+  chmod 0755 "$REPORT_ROOT" "$REPORT_ROOT/xray" "$REPORT_ROOT/xray/history"
+  chmod 0750 "$CHAITIN_XRAY_DIR"
   chmod 0755 "$CHAITIN_XRAY_DIR/xray"
   chmod 0640 "$CHAITIN_XRAY_DIR"/ca.* 2>/dev/null || true
+  find "$REPORT_ROOT/xray" -type f -name '*.html' -exec chmod 0644 {} + 2>/dev/null || true
 
   prepare_chaitin_xray_config
 
@@ -105,12 +106,16 @@ test -d "\$ARCHIVE_DIR"
 test -w "\$REPORT_DIR"
 test -w "\$ARCHIVE_DIR"
 
+chmod 0755 "\$REPORT_DIR" "\$ARCHIVE_DIR"
+
 if [[ -e "\$CURRENT_REPORT" ]]; then
   STAMP="\$(date '+%Y%m%d-%H%M%S')-\$$"
   DEST="\${ARCHIVE_DIR}/proxy-\${STAMP}.html"
 
   if [[ -s "\$CURRENT_REPORT" ]]; then
+    chmod 0644 "\$CURRENT_REPORT" 2>/dev/null || true
     mv -- "\$CURRENT_REPORT" "\$DEST"
+    chmod 0644 "\$DEST"
     echo "[OK] 旧 xray 报告已归档：\$DEST"
   else
     rm -f -- "\$CURRENT_REPORT"
@@ -143,7 +148,8 @@ Type=simple
 User=arl-xray
 Group=arl-xray
 WorkingDirectory=${CHAITIN_XRAY_DIR}
-UMask=0027
+# 报告通过 ARL Web 容器发布；0022 确保新生成 HTML 为 0644，避免跨容器 403。
+UMask=0022
 ExecStartPre=/usr/bin/test -x ${REPORT_ROOT}
 ExecStartPre=/usr/bin/test -w ${REPORT_ROOT}/xray
 ExecStartPre=/usr/bin/test -s ${CHAITIN_XRAY_DIR}/xray.yaml
