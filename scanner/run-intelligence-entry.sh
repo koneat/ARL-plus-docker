@@ -46,9 +46,9 @@ touch "$OUT/errors.log"
 
 if enabled "${ENABLE_EDGE_INTELLIGENCE:-true}"; then
   log "开始：GitHub 源码、Actions 与 FOFA 被动边缘系统情报"
-  python3 /opt/scanner/edge_intelligence.py \
+  python3 /opt/scanner/edge_intelligence_entry.py \
     "$OUT" \
-    --github-max-queries "${EDGE_GITHUB_MAX_QUERIES:-36}" \
+    --github-max-queries "${EDGE_GITHUB_MAX_QUERIES:-10}" \
     --github-max-files "${EDGE_GITHUB_MAX_FILES:-80}" \
     --fofa-max-results "${EDGE_FOFA_MAX_RESULTS:-500}" \
     --timeout "${EDGE_INTEL_TIMEOUT:-12}" \
