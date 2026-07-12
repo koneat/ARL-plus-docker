@@ -42,7 +42,10 @@ jobs:
           {
             "openapi":"3.0.3",
             "info":{"title":"Demo","version":"1"},
-            "servers":[{"url":"http://127.0.0.1:18765"}],
+            "servers":[
+              {"url":"http://127.0.0.1:18765"},
+              {"url":"http://169.254.169.254/latest"}
+            ],
             "paths":{
               "/api/admin/users/{user_id}":{
                 "delete":{"summary":"delete user","parameters":[{"name":"user_id","in":"path","required":true,"schema":{"type":"string"}}]},
@@ -50,6 +53,9 @@ jobs:
               },
               "/api/wallet/withdraw":{
                 "post":{"requestBody":{"content":{"application/json":{"schema":{"type":"object","properties":{"amount":{"type":"number"},"wallet":{"type":"string"}}}}}}}
+              },
+              "/api/status":{
+                "get":{"summary":"status"}
               }
             },
             "components":{"securitySchemes":{"bearerAuth":{"type":"http","scheme":"bearer"}}}
@@ -63,19 +69,40 @@ jobs:
           python scanner/intelligence_plus.py api \
             "$tmp/out" "$tmp/candidates.txt" \
             --scope-roots "$tmp/out/domains.txt" \
-            --max-candidates 10 --workers 2
+            --max-candidates 12 --workers 2
           python - "$tmp/out" <<'PY'
           import json, sys
           from pathlib import Path
+          from scanner.api_schema_intel import host_allowed, schema_servers
+
           root = Path(sys.argv[1])
           stats = json.loads((root / 'api-schema-stats.json').read_text())
           assert stats['valid_documents'] == 1, stats
-          assert stats['operations'] == 3, stats
+          assert stats['operations'] == 4, stats
           assert stats['priority_operations'] >= 2, stats
-          assert stats['unauthenticated_schema_operations'] == 2, stats
+          assert stats['unauthenticated_schema_operations'] == 3, stats
+          assert stats['get_operation_urls'] == 1, stats
+          assert stats['skipped_template_operation_urls'] == 1, stats
+
           priority = (root / 'api-operations-priority.txt').read_text()
           assert 'POST\thttp://127.0.0.1:18765/api/wallet/withdraw' in priority, priority
           assert 'DELETE\thttp://127.0.0.1:18765/api/admin/users/{user_id}' in priority, priority
+
+          active = (root / 'api-operation-urls.txt').read_text()
+          assert 'http://127.0.0.1:18765/api/status' in active, active
+          assert '{user_id}' not in active, active
+          assert '169.254.169.254' not in active, active
+
+          documents = [json.loads(line) for line in (root / 'api-schema-documents.jsonl').read_text().splitlines()]
+          assert all('169.254.169.254' not in server for doc in documents for server in doc['servers']), documents
+          assert host_allowed('evil.example', [], set()) is False
+          fallback = schema_servers(
+              {'swagger': '2.0', 'basePath': '/legacy'},
+              'http://127.0.0.1:18765/swagger.json',
+              ['127.0.0.1'],
+              {'127.0.0.1'},
+          )
+          assert fallback == ['http://127.0.0.1:18765/legacy'], fallback
           PY
 
       - name: Test actionable asset correlation
