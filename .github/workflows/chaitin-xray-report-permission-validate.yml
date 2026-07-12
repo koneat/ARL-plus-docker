@@ -27,29 +27,35 @@ jobs:
         run: |
           bash -n installer/lib/40-reports.sh
           bash -n installer/lib/61-chaitin-xray.sh
-      - name: Verify report root traversal policy
+      - name: Verify cross-container publication policy
         shell: bash
         run: |
           set -Eeuo pipefail
-          grep -Fq 'chmod 0711 "$REPORT_ROOT"' installer/lib/40-reports.sh
-          grep -Fq 'find "$REPORT_ROOT" -mindepth 1 -type d -exec chmod 0750 {} +' installer/lib/40-reports.sh
+          grep -Fq 'find "$REPORT_ROOT" -type d -exec chmod 0755 {} +' installer/lib/40-reports.sh
+          grep -Fq "-name '*.html' -o -name '*.json' -o -name '*.txt' -o -name '*.csv'" installer/lib/40-reports.sh
+          grep -Fq 'UMask=0022' installer/lib/61-chaitin-xray.sh
+          grep -Fq 'chmod 0755 "\$REPORT_DIR" "\$ARCHIVE_DIR"' installer/lib/61-chaitin-xray.sh
+          grep -Fq 'chmod 0644 "\$DEST"' installer/lib/61-chaitin-xray.sh
           grep -Fq 'test -d "\$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
           grep -Fq 'test -w "\$REPORT_DIR"' installer/lib/61-chaitin-xray.sh
           ! grep -Fq 'mkdir -p "\$REPORT_DIR" "\$ARCHIVE_DIR"' installer/lib/61-chaitin-xray.sh
-      - name: Exercise traversal modes and report rotation
+      - name: Exercise publication modes and report rotation
         shell: bash
         run: |
           set -Eeuo pipefail
 
           root="$(mktemp -d /tmp/arl-reports-ci.XXXXXX)"
           trap 'rm -rf "$root"' EXIT
-          chmod 0711 "$root"
-          install -d -m 0750 "$root/xray" "$root/xray/history"
+          chmod 0755 "$root"
+          install -d -m 0755 "$root/xray" "$root/xray/history"
 
           test -x "$root"
           test -w "$root/xray"
           printf old >"$root/xray/proxy.html"
+          chmod 0644 "$root/xray/proxy.html"
           mv "$root/xray/proxy.html" "$root/xray/history/proxy-test.html"
+          chmod 0644 "$root/xray/history/proxy-test.html"
           test -s "$root/xray/history/proxy-test.html"
-          test "$(stat -c '%a' "$root")" = '711'
-          test "$(stat -c '%a' "$root/xray")" = '750'
+          test "$(stat -c '%a' "$root")" = '755'
+          test "$(stat -c '%a' "$root/xray")" = '755'
+          test "$(stat -c '%a' "$root/xray/history/proxy-test.html")" = '644'
