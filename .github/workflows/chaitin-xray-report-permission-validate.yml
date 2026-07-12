@@ -32,7 +32,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           grep -Fq 'find "$REPORT_ROOT" -type d -exec chmod 0755 {} +' installer/lib/40-reports.sh
-          grep -Fq "-name '*.html' -o -name '*.json' -o -name '*.txt' -o -name '*.csv'" installer/lib/40-reports.sh
+          grep -Fq -- "-name '*.html' -o -name '*.json' -o -name '*.txt' -o -name '*.csv'" installer/lib/40-reports.sh
           grep -Fq 'UMask=0022' installer/lib/61-chaitin-xray.sh
           grep -Fq 'chmod 0755 "\$REPORT_DIR" "\$ARCHIVE_DIR"' installer/lib/61-chaitin-xray.sh
           grep -Fq 'chmod 0644 "\$DEST"' installer/lib/61-chaitin-xray.sh
