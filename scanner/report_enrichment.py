@@ -137,17 +137,23 @@ def cmd_report(args: argparse.Namespace) -> int:
     anchor = "<h2>Nuclei 命中</h2>"
     report = report.replace(anchor, section + "\n" + anchor, 1) if anchor in report else report.replace("</main>", section + "</main>", 1)
 
-    if "edge-review.md" not in report:
+    if "actionable-review.md" not in report:
         report = report.replace(
             '<li><a href="summary.md">summary.md</a></li>',
             '<li><a href="summary.md">summary.md</a></li>'
             '<li><a href="actionable-review.md">actionable-review.md</a></li>'
             '<li><a href="actionable-assets.csv">actionable-assets.csv</a></li>'
-            '<li><a href="edge-review.md">edge-review.md</a></li>'
-            '<li><a href="edge-assets.jsonl">edge-assets.jsonl</a></li>'
-            '<li><a href="edge-sensitive-indicators.jsonl">edge-sensitive-indicators.jsonl</a></li>'
             '<li><a href="api-schema-findings.md">api-schema-findings.md</a></li>'
             '<li><a href="scan-delta.md">scan-delta.md</a></li>',
+            1,
+        )
+    if "edge-review.md" not in report:
+        report = report.replace(
+            '<li><a href="summary.md">summary.md</a></li>',
+            '<li><a href="summary.md">summary.md</a></li>'
+            '<li><a href="edge-review.md">edge-review.md</a></li>'
+            '<li><a href="edge-assets.jsonl">edge-assets.jsonl</a></li>'
+            '<li><a href="edge-sensitive-indicators.jsonl">edge-sensitive-indicators.jsonl</a></li>',
             1,
         )
     report_path.write_text(report, encoding="utf-8")
