@@ -73,7 +73,9 @@ jobs:
           python - "$tmp/out" <<'PY'
           import json, sys
           from pathlib import Path
-          from scanner.api_schema_intel import host_allowed, schema_servers
+
+          sys.path.insert(0, 'scanner')
+          from api_schema_intel import host_allowed, schema_servers
 
           root = Path(sys.argv[1])
           stats = json.loads((root / 'api-schema-stats.json').read_text())
