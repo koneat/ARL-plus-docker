@@ -46,7 +46,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      bash ca-certificates curl jq libpcap0.8 openssl python3 nmap tini && \
+      bash ca-certificates curl jq libpcap0.8 openssl python3 python3-yaml nmap tini && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/ /usr/local/bin/
@@ -55,13 +55,21 @@ COPY \
   run-scan.sh \
   run-scan-uncover.sh \
   run-scan-v2.sh \
+  run-scan-v2-entry.sh \
   run-intelligence.sh \
+  run-intelligence-entry.sh \
   run-nuclei-v2.sh \
   run-afrog-v2.sh \
   prepare_targets.py \
   uncover_assets.py \
   extract_api_surface.py \
   asset_intelligence.py \
+  intelligence_plus.py \
+  intelligence_common.py \
+  api_schema_intel.py \
+  actionable_assets.py \
+  scan_delta.py \
+  report_enrichment.py \
   sanitize_url_targets.py \
   sanitize_result_artifacts.py \
   content_audit.py \
@@ -83,19 +91,32 @@ RUN sed -i 's/-follow-redirects/-follow-host-redirects/g' /opt/scanner/run-scan.
     mv /opt/scanner/run-nuclei-v2.sh /opt/scanner/run-nuclei-v2-real.sh && \
     install -m 0755 /opt/scanner/run-nuclei-closed.sh /opt/scanner/run-nuclei-v2.sh && \
     python3 /opt/scanner/patch_scanner_v2.py && \
+    mv /opt/scanner/run-intelligence.sh /opt/scanner/run-intelligence-real.sh && \
+    install -m 0755 /opt/scanner/run-intelligence-entry.sh /opt/scanner/run-intelligence.sh && \
+    mv /opt/scanner/run-scan-v2.sh /opt/scanner/run-scan-v2-real.sh && \
+    install -m 0755 /opt/scanner/run-scan-v2-entry.sh /opt/scanner/run-scan-v2.sh && \
     python3 -m py_compile \
       /opt/scanner/scanner_api.py \
       /opt/scanner/finalize_quality.py \
-      /opt/scanner/patch_scanner_v2.py && \
+      /opt/scanner/patch_scanner_v2.py \
+      /opt/scanner/intelligence_plus.py \
+      /opt/scanner/intelligence_common.py \
+      /opt/scanner/api_schema_intel.py \
+      /opt/scanner/actionable_assets.py \
+      /opt/scanner/scan_delta.py \
+      /opt/scanner/report_enrichment.py && \
     chmod +x \
       /opt/scanner/entrypoint.sh \
       /opt/scanner/run-scan.sh \
       /opt/scanner/run-scan-uncover.sh \
       /opt/scanner/run-scan-v2.sh \
+      /opt/scanner/run-scan-v2-real.sh \
       /opt/scanner/run-intelligence.sh \
+      /opt/scanner/run-intelligence-real.sh \
       /opt/scanner/run-nuclei-v2.sh \
       /opt/scanner/run-nuclei-v2-real.sh \
       /opt/scanner/run-afrog-v2.sh \
+      /opt/scanner/intelligence_plus.py \
       /opt/scanner/sanitize_url_targets.py \
       /opt/scanner/sanitize_result_artifacts.py \
       /opt/scanner/scanner_api.py && \

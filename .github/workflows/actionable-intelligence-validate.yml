@@ -1,0 +1,157 @@
+name: actionable-intelligence-validate
+
+on:
+  pull_request:
+    paths:
+      - 'scanner/**'
+      - '.github/workflows/actionable-intelligence-validate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scanner/**'
+      - '.github/workflows/actionable-intelligence-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate syntax and image wiring
+        run: |
+          set -Eeuo pipefail
+          python -m py_compile scanner/intelligence_plus.py scanner/intelligence_common.py scanner/api_schema_intel.py scanner/actionable_assets.py scanner/scan_delta.py scanner/report_enrichment.py
+          bash -n scanner/run-intelligence-entry.sh
+          bash -n scanner/run-scan-v2-entry.sh
+          grep -Fq 'python3-yaml' scanner/Dockerfile
+          grep -Fq 'intelligence_plus.py' scanner/Dockerfile
+          grep -Fq 'mv /opt/scanner/run-intelligence.sh /opt/scanner/run-intelligence-real.sh' scanner/Dockerfile
+          grep -Fq 'mv /opt/scanner/run-scan-v2.sh /opt/scanner/run-scan-v2-real.sh' scanner/Dockerfile
+
+      - name: Test OpenAPI operation intelligence
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          trap 'kill "${server_pid:-}" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/site" "$tmp/out"
+          cat >"$tmp/site/openapi.json" <<'JSON'
+          {
+            "openapi":"3.0.3",
+            "info":{"title":"Demo","version":"1"},
+            "servers":[{"url":"http://127.0.0.1:18765"}],
+            "paths":{
+              "/api/admin/users/{user_id}":{
+                "delete":{"summary":"delete user","parameters":[{"name":"user_id","in":"path","required":true,"schema":{"type":"string"}}]},
+                "get":{"security":[{"bearerAuth":[]}],"summary":"get user"}
+              },
+              "/api/wallet/withdraw":{
+                "post":{"requestBody":{"content":{"application/json":{"schema":{"type":"object","properties":{"amount":{"type":"number"},"wallet":{"type":"string"}}}}}}}
+              }
+            },
+            "components":{"securitySchemes":{"bearerAuth":{"type":"http","scheme":"bearer"}}}
+          }
+          JSON
+          printf '127.0.0.1\n' >"$tmp/out/domains.txt"
+          printf 'http://127.0.0.1:18765/openapi.json\n' >"$tmp/candidates.txt"
+          python -m http.server 18765 --bind 127.0.0.1 --directory "$tmp/site" >"$tmp/http.log" 2>&1 &
+          server_pid=$!
+          sleep 1
+          python scanner/intelligence_plus.py api \
+            "$tmp/out" "$tmp/candidates.txt" \
+            --scope-roots "$tmp/out/domains.txt" \
+            --max-candidates 10 --workers 2
+          python - "$tmp/out" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          stats = json.loads((root / 'api-schema-stats.json').read_text())
+          assert stats['valid_documents'] == 1, stats
+          assert stats['operations'] == 3, stats
+          assert stats['priority_operations'] >= 2, stats
+          assert stats['unauthenticated_schema_operations'] == 2, stats
+          priority = (root / 'api-operations-priority.txt').read_text()
+          assert 'POST\thttp://127.0.0.1:18765/api/wallet/withdraw' in priority, priority
+          assert 'DELETE\thttp://127.0.0.1:18765/api/admin/users/{user_id}' in priority, priority
+          PY
+
+      - name: Test actionable asset correlation
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          cat >"$tmp/httpx.jsonl" <<'JSONL'
+          {"url":"https://admin.example.com","status_code":200,"title":"Admin","tech":["Vue.js"],"webserver":"nginx","ip":"1.2.3.4"}
+          JSONL
+          cat >"$tmp/url-intelligence.jsonl" <<'JSONL'
+          {"url":"https://admin.example.com/api/wallet/withdraw?token=","score":12,"reasons":["api","parameters","sensitive-parameter"]}
+          JSONL
+          cat >"$tmp/content-audit.jsonl" <<'JSONL'
+          {"url":"https://admin.example.com/.env","status":200,"interesting":true,"leak_signatures":["dotenv"],"secret_indicators":[{"type":"aws-access-key","redacted":"AKIA…AAAA"}],"endpoint_count":4}
+          JSONL
+          cat >"$tmp/api-operations.jsonl" <<'JSONL'
+          {"document_url":"https://admin.example.com/openapi.json","method":"POST","path":"/api/wallet/withdraw","secured":false,"risk_score":22,"priority":"P0","risk_reasons":["write-method","keyword:withdraw","no-schema-security"],"urls":["https://admin.example.com/api/wallet/withdraw"]}
+          JSONL
+          cat >"$tmp/nuclei.jsonl" <<'JSONL'
+          {"template-id":"demo","info":{"name":"Demo High","severity":"high"},"matched-at":"https://admin.example.com/.env"}
+          JSONL
+          cat >"$tmp/tls-findings.jsonl" <<'JSONL'
+          {"host":"admin.example.com","ip":"1.2.3.4","flags":{"expired":false,"self_signed":true}}
+          JSONL
+          : >"$tmp/afrog.json"
+          : >"$tmp/cdncheck.jsonl"
+          printf 'https://admin.example.com/app.js.map\n' >"$tmp/sourcemaps.v2.urls.txt"
+          printf 'https://admin.example.com/openapi.json\n' >"$tmp/api-docs-endpoints.txt"
+          python scanner/intelligence_plus.py actionable "$tmp"
+          python - "$tmp" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          stats = json.loads((root / 'actionable-stats.json').read_text())
+          item = json.loads((root / 'actionable-assets.jsonl').read_text().splitlines()[0])
+          assert stats['assets'] == 1, stats
+          assert stats['p0'] == 1, stats
+          assert item['priority'] == 'P0', item
+          assert 'wallet' in item['categories'], item
+          assert item['counts']['api_operations'] == 1, item
+          assert item['counts']['secret_indicators'] == 1, item
+          assert (root / 'asset-relationships.jsonl').stat().st_size > 0
+          PY
+
+      - name: Test scan delta and report enrichment
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/old" "$tmp/new"
+          printf 'a.example.com\n' >"$tmp/old/domains.txt"
+          printf 'a.example.com\nb.example.com\n' >"$tmp/new/domains.txt"
+          : >"$tmp/old/nuclei.jsonl"
+          printf '{"template-id":"x","info":{"name":"X","severity":"high"},"matched-at":"https://b.example.com"}\n' >"$tmp/new/nuclei.jsonl"
+          ln -s old "$tmp/latest"
+          python scanner/intelligence_plus.py delta "$tmp/new" "$tmp"
+          cat >"$tmp/new/report.html" <<'HTML'
+          <html><body><main><div class="cards"></div><h2>Nuclei 命中</h2><h2>结果文件</h2><ul><li><a href="summary.md">summary.md</a></li></ul></main></body></html>
+          HTML
+          printf '# Summary\n' >"$tmp/new/summary.md"
+          printf '{}\n' >"$tmp/new/summary.json"
+          printf '{"assets":1,"p0":1,"p1":0,"p2":0,"actionable_targets":2}\n' >"$tmp/new/actionable-stats.json"
+          printf '{"valid_documents":1,"operations":2,"priority_operations":1,"unauthenticated_schema_operations":1}\n' >"$tmp/new/api-schema-stats.json"
+          printf '{"priority":"P0","risk_score":100,"origin":"https://b.example.com","categories":["admin"],"risk_reasons":["high-finding:1"],"recommended_validation":["复核"]}\n' >"$tmp/new/actionable-assets.jsonl"
+          printf '{"priority":"P1","method":"POST","path":"/api/admin","secured":false,"risk_reasons":["write-method"],"urls":["https://b.example.com/api/admin"]}\n' >"$tmp/new/api-operations.jsonl"
+          python scanner/intelligence_plus.py report "$tmp/new"
+          python scanner/intelligence_plus.py report "$tmp/new"
+          python - "$tmp/new" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          delta = json.loads((root / 'scan-delta.json').read_text())
+          assert delta['new_items_total'] == 1, delta
+          assert delta['new_findings'] == 1, delta
+          report = (root / 'report.html').read_text()
+          assert report.count('可行动资产优先级') == 1, report
+          assert 'api-schema-findings.md' in report, report
+          summary = json.loads((root / 'summary.json').read_text())
+          assert 'actionable_intelligence' in summary['scanner_v2'], summary
+          PY
