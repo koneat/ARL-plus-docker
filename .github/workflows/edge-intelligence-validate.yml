@@ -28,10 +28,12 @@ jobs:
       - name: Validate syntax and wiring
         run: |
           set -Eeuo pipefail
-          python -m py_compile scanner/edge_intelligence.py scanner/report_enrichment.py
+          python -m py_compile scanner/edge_intelligence.py scanner/edge_intelligence_entry.py scanner/report_enrichment.py
           bash -n scanner/run-intelligence-entry.sh
           grep -Fq 'edge_intelligence.py' scanner/Dockerfile
+          grep -Fq 'edge_intelligence_entry.py' scanner/Dockerfile
           grep -Fq 'ENABLE_EDGE_INTELLIGENCE' docker-compose.scanner.yml
+          grep -Fq 'EDGE_GITHUB_MAX_QUERIES: ${EDGE_GITHUB_MAX_QUERIES:-10}' docker-compose.scanner.yml
           grep -Fq 'EDGE_INTEL_FEED_SCAN: ${EDGE_INTEL_FEED_SCAN:-false}' docker-compose.scanner.yml
           grep -Fq 'GITHUB_TOKEN_FILE: ${GITHUB_TOKEN_FILE:-/run/secrets/github_token}' docker-compose.scanner.yml
           grep -Fq 'FOFA_KEY_FILE: ${FOFA_KEY_FILE:-/run/secrets/fofa_key}' docker-compose.scanner.yml
@@ -42,6 +44,7 @@ jobs:
           tmp="$(mktemp -d)"
           mkdir -p "$tmp/out"
           printf 'example.com\n' >"$tmp/out/domains.txt"
+          printf 'api.example.com\nstaging.example.com\n' >"$tmp/out/domains.all.txt"
           printf '192.0.2.10\n' >"$tmp/out/ips.txt"
 
           cat >"$tmp/github.json" <<'JSON'
@@ -60,11 +63,11 @@ jobs:
           cat >"$tmp/fofa.json" <<'JSON'
           [
             {
-              "host":"https://dev.example.com:8443",
+              "host":"dev.example.com:8443",
               "ip":"203.0.113.5",
               "port":8443,
               "protocol":"https",
-              "domain":"dev.example.com",
+              "domain":"",
               "title":"Jenkins Dev",
               "server":"nginx",
               "product":"Jenkins",
@@ -75,7 +78,7 @@ jobs:
           ]
           JSON
 
-          python scanner/edge_intelligence.py "$tmp/out" \
+          python scanner/edge_intelligence_entry.py "$tmp/out" \
             --github-fixture "$tmp/github.json" \
             --fofa-fixture "$tmp/fofa.json"
 
@@ -84,6 +87,7 @@ jobs:
           from pathlib import Path
           root = Path(sys.argv[1])
           stats = json.loads((root / 'edge-intelligence-stats.json').read_text())
+          assert stats['scope_domains'] == 1, stats
           assert stats['assets'] == 2, stats
           assert stats['non_production_assets'] == 2, stats
           assert stats['github_workflows'] == 1, stats
