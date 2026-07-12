@@ -71,6 +71,7 @@ COPY \
   scan_delta.py \
   report_enrichment.py \
   edge_intelligence.py \
+  edge_intelligence_entry.py \
   sanitize_url_targets.py \
   sanitize_result_artifacts.py \
   content_audit.py \
@@ -106,7 +107,8 @@ RUN sed -i 's/-follow-redirects/-follow-host-redirects/g' /opt/scanner/run-scan.
       /opt/scanner/actionable_assets.py \
       /opt/scanner/scan_delta.py \
       /opt/scanner/report_enrichment.py \
-      /opt/scanner/edge_intelligence.py && \
+      /opt/scanner/edge_intelligence.py \
+      /opt/scanner/edge_intelligence_entry.py && \
     chmod +x \
       /opt/scanner/entrypoint.sh \
       /opt/scanner/run-scan.sh \
@@ -120,6 +122,7 @@ RUN sed -i 's/-follow-redirects/-follow-host-redirects/g' /opt/scanner/run-scan.
       /opt/scanner/run-afrog-v2.sh \
       /opt/scanner/intelligence_plus.py \
       /opt/scanner/edge_intelligence.py \
+      /opt/scanner/edge_intelligence_entry.py \
       /opt/scanner/sanitize_url_targets.py \
       /opt/scanner/sanitize_result_artifacts.py \
       /opt/scanner/scanner_api.py && \
