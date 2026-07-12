@@ -1,0 +1,128 @@
+name: edge-intelligence-validate
+
+on:
+  pull_request:
+    paths:
+      - 'scanner/**'
+      - 'docker-compose.scanner.yml'
+      - 'EDGE_INTELLIGENCE.md'
+      - '.github/workflows/edge-intelligence-validate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scanner/**'
+      - 'docker-compose.scanner.yml'
+      - 'EDGE_INTELLIGENCE.md'
+      - '.github/workflows/edge-intelligence-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate syntax and wiring
+        run: |
+          set -Eeuo pipefail
+          python -m py_compile scanner/edge_intelligence.py scanner/edge_intelligence_entry.py scanner/report_enrichment.py
+          bash -n scanner/run-intelligence-entry.sh
+          grep -Fq 'edge_intelligence.py' scanner/Dockerfile
+          grep -Fq 'edge_intelligence_entry.py' scanner/Dockerfile
+          grep -Fq 'ENABLE_EDGE_INTELLIGENCE' docker-compose.scanner.yml
+          grep -Fq 'EDGE_GITHUB_MAX_QUERIES: ${EDGE_GITHUB_MAX_QUERIES:-10}' docker-compose.scanner.yml
+          grep -Fq 'EDGE_INTEL_FEED_SCAN: ${EDGE_INTEL_FEED_SCAN:-false}' docker-compose.scanner.yml
+          grep -Fq 'GITHUB_TOKEN_FILE: ${GITHUB_TOKEN_FILE:-/run/secrets/github_token}' docker-compose.scanner.yml
+          grep -Fq 'FOFA_KEY_FILE: ${FOFA_KEY_FILE:-/run/secrets/fofa_key}' docker-compose.scanner.yml
+
+      - name: Test GitHub Actions and FOFA fixture analysis
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/out"
+          printf 'example.com\n' >"$tmp/out/domains.txt"
+          printf 'api.example.com\nstaging.example.com\n' >"$tmp/out/domains.all.txt"
+          printf '192.0.2.10\n' >"$tmp/out/ips.txt"
+
+          cat >"$tmp/github.json" <<'JSON'
+          [
+            {
+              "repository":"acme/example-app",
+              "path":".github/workflows/deploy-staging.yml",
+              "sha":"abc123",
+              "html_url":"https://github.com/acme/example-app/blob/main/.github/workflows/deploy-staging.yml",
+              "queries":["example.com"],
+              "content":"name: deploy staging\njobs:\n  deploy:\n    environment:\n      name: staging\n      url: https://staging.example.com\n    runs-on: self-hosted\n    steps:\n      - uses: aws-actions/configure-aws-credentials@v4\n      - run: echo DATABASE_URL=postgres://user:top-secret@db.internal/test\n      - run: curl https://staging.example.com/api/debug\n      - run: curl https://outside.example.net/admin\n"
+            }
+          ]
+          JSON
+
+          cat >"$tmp/fofa.json" <<'JSON'
+          [
+            {
+              "host":"dev.example.com:8443",
+              "ip":"203.0.113.5",
+              "port":8443,
+              "protocol":"https",
+              "domain":"",
+              "title":"Jenkins Dev",
+              "server":"nginx",
+              "product":"Jenkins",
+              "product_category":"DevOps",
+              "os":"Linux",
+              "query_root":"example.com"
+            }
+          ]
+          JSON
+
+          python scanner/edge_intelligence_entry.py "$tmp/out" \
+            --github-fixture "$tmp/github.json" \
+            --fofa-fixture "$tmp/fofa.json"
+
+          python - "$tmp/out" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          stats = json.loads((root / 'edge-intelligence-stats.json').read_text())
+          assert stats['scope_domains'] == 1, stats
+          assert stats['assets'] == 2, stats
+          assert stats['non_production_assets'] == 2, stats
+          assert stats['github_workflows'] == 1, stats
+          assert stats['fofa_results'] == 1, stats
+          assert stats['sensitive_indicators'] == 1, stats
+          assets = [json.loads(x) for x in (root / 'edge-assets.jsonl').read_text().splitlines()]
+          by_host = {x['host']: x for x in assets}
+          assert by_host['staging.example.com']['environments'] == ['staging'], by_host
+          assert 'jenkins' in by_host['dev.example.com']['components'], by_host
+          assert '203.0.113.5' in by_host['dev.example.com']['ips'], by_host
+          assert '203.0.113.5' not in (root / 'edge-hosts.txt').read_text(), 'associated IP entered active host scope'
+          all_text = '\n'.join(p.read_text(errors='ignore') for p in root.iterdir() if p.is_file())
+          assert 'top-secret' not in all_text, all_text
+          assert 'postgres://user:' not in all_text, all_text
+          assert 'outside.example.net' not in (root / 'edge-hosts.txt').read_text(), all_text
+          assert 'staging.example.com' in (root / 'edge-review.md').read_text(), all_text
+          PY
+
+      - name: Test report enrichment idempotence
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          printf '{}\n' >"$tmp/summary.json"
+          printf '# Summary\n' >"$tmp/summary.md"
+          printf '<html><body><main><h2>Nuclei 命中</h2><ul><li><a href="summary.md">summary.md</a></li></ul></main></body></html>\n' >"$tmp/report.html"
+          printf '{"assets":1,"p0":0,"p1":1,"p2":0}\n' >"$tmp/actionable-stats.json"
+          printf '{"valid_documents":0,"operations":0}\n' >"$tmp/api-schema-stats.json"
+          printf '{"status":"no-baseline","new_items_total":0,"new_api_operations":0,"new_findings":0}\n' >"$tmp/scan-delta.json"
+          printf '{"assets":2,"non_production_assets":2,"github_config_files":1,"github_workflows":1,"fofa_results":1,"sensitive_indicators":1}\n' >"$tmp/edge-intelligence-stats.json"
+          printf '{"priority":"P1","risk_score":70,"host":"staging.example.com","environments":["staging"],"components":["jenkins"],"sources":["github","fofa"],"risk_reasons":["non-production:staging"]}\n' >"$tmp/edge-assets.jsonl"
+          : >"$tmp/actionable-assets.jsonl"
+          : >"$tmp/api-operations.jsonl"
+          python scanner/intelligence_plus.py report "$tmp"
+          python scanner/intelligence_plus.py report "$tmp"
+          grep -q 'GitHub / Actions / FOFA 边缘系统' "$tmp/report.html"
+          grep -q 'edge-review.md' "$tmp/report.html"
+          test "$(grep -o 'GitHub / Actions / FOFA 边缘系统' "$tmp/report.html" | wc -l)" -eq 1
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["scanner_v2"]["edge_intelligence"]["non_production_assets"] == 2' "$tmp/summary.json"
