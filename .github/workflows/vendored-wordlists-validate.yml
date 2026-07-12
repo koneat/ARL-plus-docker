@@ -109,7 +109,7 @@ jobs:
             -f docker-compose.enhanced-worker.yml \
             build --pull worker
 
-      - name: Smoke-test vendored dictionaries in image
+      - name: Smoke-test vendored dictionaries and strict quality profile
         run: |
           docker run --rm --entrypoint sh \
             arl-enhanced-worker:v3.0.1-2026.07 -c '
@@ -120,7 +120,12 @@ jobs:
               grep -qx "api/auth/login" /opt/arl-wordlists/api-endpoints.txt
               grep -qx "index.php" /opt/arl-wordlists/raft-small-files.txt
               grep -qx "admin" /opt/arl-wordlists/subdomains-main.txt
-              grep -qx "api/auth/login" /code/app/dicts/file_top_2000.txt
-              grep -qx "index.php" /code/app/dicts/file_top_2000.txt
+
+              test "$(grep -cve "^[[:space:]]*$" /code/app/dicts/file_top_2000.txt)" -ge "${ARL_FILE_LEAK_MIN_DICTIONARY:-40}"
+              grep -qx ".env" /code/app/dicts/file_top_2000.txt
+              grep -qx "swagger.json" /code/app/dicts/file_top_2000.txt
+              ! grep -qx "api/auth/login" /code/app/dicts/file_top_2000.txt
+              ! grep -qx "index.php" /code/app/dicts/file_top_2000.txt
+              ! grep -q -- "--dc" /code/app/services/infoHunter.py
               grep -qx "admin" /code/app/dicts/domain_2w.txt
             '
