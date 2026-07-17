@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-scanner-v2-complete.1
+# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-final.1
 set -Eeuo pipefail
 umask 077
 
@@ -10,8 +10,8 @@ VLESS_FILE="${VLESS_NODES_FILE:-/etc/xray-core/vless-nodes.txt}"
 TUNNEL_ENV_FILE="${TUNNEL_ENV_FILE:-/root/tunnel-client.env}"
 ARL_DIR="${ARL_DIR:-/root/ARL-plus-docker}"
 REPO_URL="${REPO_URL:-https://github.com/koneat/ARL-plus-docker.git}"
-RELEASE_BRANCH="${RELEASE_BRANCH:-release/2026.07.09-scanner-v2-control-plane}"
-REVIEWED_COMMIT="${REVIEWED_COMMIT:-bc68248f782adeefa358dd23a5fde4eedd77ce73}"
+RELEASE_BRANCH="${RELEASE_BRANCH:-release/2026.07.17-final}"
+REVIEWED_COMMIT="${REVIEWED_COMMIT:-7ac2c8e0aa4440672eccf163d7604c1864c2065a}"
 FINAL_INSTALLER="${FINAL_INSTALLER:-/root/install-arl-final.sh}"
 EXPECTED_INSTALLER_VERSION="2026.07.09-auth-audited.2"
 INSTALL_TUNNEL_CLIENT="${INSTALL_TUNNEL_CLIENT:-false}"
