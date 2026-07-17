@@ -57,8 +57,8 @@ source = source.replace(
 
 runtime_permissions = '''  chmod 755 "$work/results" "$work/config" "$work/templates" "$work/pocs" "$work/pocs/nuclei" "$work/pocs/afrog"
 '''
-runtime_permissions_fixed = runtime_permissions + '''  # 生产安装器以 root 创建这些目录；cap_drop=ALL 后容器不能绕过错误属主。
-  sudo chown -R 0:0 "$work/results" "$work/config" "$work/templates"
+runtime_permissions_fixed = runtime_permissions + '''  # 生产安装器以 root 创建可写结果与状态目录；模板仍需先由测试进程生成。
+  sudo chown -R 0:0 "$work/results" "$work/config"
 '''
 if runtime_permissions not in source:
     raise SystemExit('runtime permission block not found')
