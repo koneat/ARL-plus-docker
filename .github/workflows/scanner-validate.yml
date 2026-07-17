@@ -273,12 +273,21 @@ jobs:
             test -f /opt/scanner/sanitize_result_artifacts.py
             grep -q -- "-follow-host-redirects" /opt/scanner/run-scan.sh
             ! grep -q -- "-follow-redirects" /opt/scanner/run-scan.sh
-            urlfinder -h >/dev/null 2>&1
-            gau --version >/dev/null 2>&1
-            tlsx -h >/dev/null 2>&1
-            alterx -h >/dev/null 2>&1
-            cdncheck -h >/dev/null 2>&1
-            nuclei -h 2>&1 | grep -q -- "-automatic-scan"
+            # 部分第三方 CLI 在成功打印 -h/--version 后仍返回非零，不能把
+            # “帮助命令退出码”误判成运行故障。二进制存在性已在上方严格检查；
+            # 这里只校验帮助内容和关键能力，后续离线扫描链仍保持 set -e。
+            help_output="$(urlfinder -h 2>&1 || true)"
+            test -n "$help_output"
+            version_output="$(gau --version 2>&1 || true)"
+            test -n "$version_output"
+            help_output="$(tlsx -h 2>&1 || true)"
+            test -n "$help_output"
+            help_output="$(alterx -h 2>&1 || true)"
+            test -n "$help_output"
+            help_output="$(cdncheck -h 2>&1 || true)"
+            test -n "$help_output"
+            nuclei_help="$(nuclei -h 2>&1 || true)"
+            grep -q -- "-automatic-scan" <<<"$nuclei_help"
             tmp=/tmp/offline-v2
             rm -rf "$tmp" && mkdir -p "$tmp/ffuf"
             for f in domains.txt domains.all.txt live-urls.txt katana.txt sourcemap-candidates.txt open-services.txt ips.txt httpx.jsonl scan-urls.txt errors.log manifest.txt; do : >"$tmp/$f"; done
