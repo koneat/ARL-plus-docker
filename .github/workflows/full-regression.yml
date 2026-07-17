@@ -12,6 +12,10 @@ concurrency:
   group: full-regression-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  BUILDKIT_PROGRESS: quiet
+  COMPOSE_PROGRESS: quiet
+
 jobs:
   static:
     runs-on: ubuntu-latest
@@ -33,14 +37,19 @@ jobs:
           df -h
       - name: Run Scanner V2 and MCP end-to-end
         run: bash .github/scripts/full-regression.sh runtime
-      - name: Upload runtime logs on failure
+      - name: Show Scanner/MCP diagnostics on failure
         if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: full-regression-runtime-logs
-          path: |
-            /tmp/**/arl-e2e-*.log
-          if-no-files-found: ignore
+        run: |
+          echo '=== docker ps ==='
+          docker ps -a || true
+          for c in arl-e2e-scanner arl-e2e-mcp arl-e2e-mcp-auth arl-e2e-fixture; do
+            echo "=== $c logs ==="
+            docker logs --tail=250 "$c" 2>&1 || true
+          done
+          echo '=== result files ==='
+          find /tmp -path '*/results/*' -maxdepth 8 -type f -printf '%p %s bytes\n' 2>/dev/null | tail -n 300 || true
+          echo '=== disk ==='
+          df -h || true
 
   compose-runtime:
     runs-on: ubuntu-latest
@@ -54,9 +63,16 @@ jobs:
           df -h
       - name: Run real Compose topology
         run: bash .github/scripts/full-regression.sh compose
-      - name: Show Docker state on failure
+      - name: Show Compose diagnostics on failure
         if: failure()
         run: |
+          echo '=== docker ps ==='
           docker ps -a || true
+          echo '=== compose logs ==='
           docker compose logs --tail=300 --no-color || true
+          echo '=== rendered mounts ==='
+          docker compose config | sed -n '/services:/,$p' | grep -n -A5 -B5 '/code/frontend/report\|/work/results\|scanner-v2' || true
+          echo '=== report tree ==='
+          find "${ARL_REPORT_ROOT:-/var/lib/arl-reports}" -maxdepth 4 -printf '%M %u:%g %p %s bytes\n' 2>/dev/null | tail -n 300 || true
+          echo '=== disk ==='
           df -h || true
