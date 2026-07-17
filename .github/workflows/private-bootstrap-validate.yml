@@ -27,13 +27,15 @@ jobs:
           bash -n "$entry"
           bash -n "$complete"
           bash -n "$installer"
-          grep -q 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-final.2' "$entry"
-          grep -q 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.3' "$complete"
+          grep -q 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-final.3' "$entry"
+          grep -q 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.4' "$complete"
           grep -q 'ARL_COMPLETE_INSTALLER_VERSION=2026.07.17-mcp-url-safe.3' "$installer"
           grep -q 'release/2026.07.17-final' "$entry"
           grep -q 'release/2026.07.17-final' "$complete"
           grep -q 'private-bootstrap-complete.sh' "$entry"
           grep -q 'install-arl-complete.sh' "$complete"
+          grep -q 'apt_update_resilient()' "$complete"
+          grep -q 'install_bootstrap_dependencies()' "$complete"
           grep -q 'set_env_value ENABLE_CHAITIN_XRAY true' "$complete"
           grep -q 'set_env_value ARL_AUTO_AFROG_SCAN true' "$complete"
           grep -q 'set_env_value ENABLE_SCANNER_STACK true' "$complete"
@@ -41,6 +43,7 @@ jobs:
           grep -q 'docker exec -i arl_mcp_local python -' "$complete"
           grep -q 'https://127.0.0.1:5003/report/' "$complete"
           grep -q 'http://127.0.0.1:5013/mcp' "$complete"
+          ! grep -q 'exec bash "$COMPLETE_BOOTSTRAP"' "$entry"
 
       - name: Reject embedded production secrets
         run: |
