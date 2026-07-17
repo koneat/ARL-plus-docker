@@ -17,7 +17,7 @@ services:
         ALTERX_VERSION: ${ALTERX_VERSION:-bae701c363da0fecf5e788322188df9f4d419bef}
         CDNCHECK_VERSION: ${CDNCHECK_VERSION:-0adc3138f381f86cba14c75f7aa688177167a192}
         GAU_VERSION: ${GAU_VERSION:-8201b9d1febadba98e9cb81e3f253284e8a4a88b}
-    image: arl-plus-scanner:2026.07-v2
+    image: ${ARL_SCANNER_V2_IMAGE:-arl-plus-scanner:2026.07-v2-control}
     profiles:
       - scanner
     working_dir: /work
