@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_COMPLETE_INSTALLER_VERSION=2026.07.17-mcp-url-safe.2
+# ARL_COMPLETE_INSTALLER_VERSION=2026.07.17-mcp-url-safe.3
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,12 +24,13 @@ import json
 import sys
 
 host_port = sys.argv[1]
-container_port = f"{host_port}/tcp"
 ports = json.loads(sys.argv[2])
-for binding in ports.get(container_port) or []:
-    if str(binding.get("HostPort")) == host_port:
-        print(binding.get("HostIp") or "")
-        break
+for bindings in ports.values():
+    for binding in bindings or []:
+        if str(binding.get("HostPort")) == host_port:
+            print(binding.get("HostIp") or "")
+            raise SystemExit(0)
+raise SystemExit(1)
 PY
 }
 
@@ -76,12 +77,14 @@ post_install_auth_audit() {
   [[ "$local_container_token" == "$token" ]] || die '认证审查失败：本机 MCP 容器 Token 与凭据文件不一致'
   [[ "$external_container_token" == "$token" ]] || die '认证审查失败：外部 MCP 容器 Token 与凭据文件不一致'
 
-  local_bind="$(host_bind_ip arl_mcp_local 5013)"
+  local_bind="$(host_bind_ip arl_mcp_local 5013)" ||
+    die '认证审查失败：没有找到本机 MCP 5013 端口映射'
   [[ "$local_bind" == '127.0.0.1' || "$local_bind" == '::1' ]] ||
     die "认证审查失败：5013 绑定到 ${local_bind:-unknown}，必须只绑定回环地址"
 
-  actual_external_bind="$(host_bind_ip arl_mcp 5014)"
-  [[ -n "$actual_external_bind" ]] || die '认证审查失败：没有找到外部 MCP 5014 端口映射'
+  actual_external_bind="$(host_bind_ip arl_mcp 5014)" ||
+    die '认证审查失败：没有找到外部 MCP 5014 端口映射'
+  [[ -n "$actual_external_bind" ]] || die '认证审查失败：外部 MCP 5014 绑定地址为空'
   external_host="$(mcp_test_host "$actual_external_bind")" ||
     die "认证审查失败：5014 实际绑定地址非法：${actual_external_bind@Q}"
   external_url="http://${external_host}:5014/mcp"
