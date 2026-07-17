@@ -25,9 +25,9 @@ jobs:
       - name: Run static and installer checks
         run: bash .github/scripts/full-regression-static.sh
 
-  scanner-mcp-runtime:
+  build-images:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Free runner disk
@@ -35,7 +35,36 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
           docker system prune -af || true
           df -h
+      - name: Build formal Scanner V2 and MCP images once
+        run: |
+          set -Eeuo pipefail
+          docker build --quiet -t arl-e2e-scanner-image ./scanner
+          docker build --quiet -t arl-e2e-mcp-image ./mcp
+          docker save arl-e2e-scanner-image arl-e2e-mcp-image | gzip -1 >regression-images.tar.gz
+          ls -lh regression-images.tar.gz
+      - name: Upload formal images
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-images
+          path: regression-images.tar.gz
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  scanner-mcp-runtime:
+    needs: build-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: regression-images
+      - name: Load formal images
+        run: gzip -dc regression-images.tar.gz | docker load
       - name: Run Scanner V2 and MCP end-to-end
+        env:
+          REGRESSION_IMAGES_PREBUILT: 'true'
         run: bash .github/scripts/full-regression-ci.sh runtime
       - name: Collect Scanner/MCP diagnostics
         if: failure()
@@ -74,16 +103,23 @@ jobs:
           docker network rm arl-e2e >/dev/null 2>&1 || true
 
   compose-runtime:
+    needs: build-images
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Free runner disk
+      - uses: actions/download-artifact@v4
+        with:
+          name: regression-images
+      - name: Load and tag formal images
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
-          docker system prune -af || true
-          df -h
+          gzip -dc regression-images.tar.gz | docker load
+          docker tag arl-e2e-scanner-image arl-plus-scanner:2026.07-v2-control
+          docker tag arl-e2e-mcp-image arl-plus-docker-mcp-local
+          docker tag arl-e2e-mcp-image arl-plus-docker-mcp
       - name: Run real Compose topology
+        env:
+          REGRESSION_IMAGES_PREBUILT: 'true'
         run: bash .github/scripts/full-regression-ci.sh compose
       - name: Collect Compose diagnostics
         if: failure()
