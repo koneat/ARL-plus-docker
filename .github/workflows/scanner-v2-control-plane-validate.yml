@@ -27,6 +27,7 @@ jobs:
       - name: Validate shell and Python syntax
         run: |
           set -Eeuo pipefail
+          bash -n scanner/entrypoint.sh
           bash -n scanner/run-nuclei-closed.sh
           bash -n installer/lib/30-deploy.sh
           bash -n installer/lib/80-enhancements.sh
@@ -38,6 +39,12 @@ jobs:
             mcp/enhanced_tools.py \
             mcp/launcher.py \
             mcp/patch_server.py
+          grep -Fq 'SCANNER_V2_STATE_ROOT' scanner/scanner_api.py
+          grep -Fq 'SCANNER_V2_LOG_ROOT' scanner/scanner_api.py
+          grep -Fq '_submit_lock' scanner/scanner_api.py
+          grep -Fq 'NUCLEI_TEMPLATE_UPDATE_TIMEOUT' scanner/entrypoint.sh
+          grep -Fq 'timeout "${TEMPLATE_UPDATE_TIMEOUT}s" nuclei -ut' scanner/entrypoint.sh
+          ! grep -Fq '"log": f"{base}/scanner-api.log"' scanner/scanner_api.py
 
       - name: Validate Compose wiring
         run: |
@@ -77,12 +84,14 @@ jobs:
           out="$SCANNER_V2_RESULT_ROOT/$SCAN_ID"
           mkdir -p "$out"
           printf '{"domains":1}\n' >"$out/summary.json"
-          printf '{"status":"completed","scanner_v2":true}\n' >"$out/quality-status.json"
+          printf '{"status":"completed","scanner_v2":true,"quality_upgrade":true}\n' >"$out/quality-status.json"
           printf '{"status":"completed_zero_findings","template_count":100}\n' >"$out/nuclei-status.json"
           printf '<html><body>ok</body></html>\n' >"$out/report.html"
           SH
           chmod +x "$tmp/fake-runner"
           export SCANNER_V2_RESULT_ROOT="$tmp/results"
+          export SCANNER_V2_STATE_ROOT="$tmp/state"
+          export SCANNER_V2_LOG_ROOT="$tmp/logs"
           export SCANNER_V2_INPUT_ROOT="$tmp/input"
           export SCANNER_V2_RUNNER="$tmp/fake-runner"
           export SCANNER_V2_PORT=18090
@@ -99,6 +108,7 @@ jobs:
             --data '{"name":"ci","targets":"example.com","mode":"fast"}')"
           scan_id="$(jq -r .scan_id <<<"$response")"
           test -n "$scan_id"
+          ! jq -e 'has("target_file")' <<<"$response"
           for _ in $(seq 1 50); do
             state="$(curl -fsS "http://127.0.0.1:18090/scans/$scan_id")"
             status="$(jq -r .status <<<"$state")"
@@ -110,6 +120,9 @@ jobs:
           curl -fsS "http://127.0.0.1:18090/scans/$scan_id/summary" | jq -e '.quality.scanner_v2 == true'
           test -s "$tmp/results/index.html"
           grep -q "$scan_id/report.html" "$tmp/results/index.html"
+          test ! -e "$tmp/input/$scan_id.targets.txt"
+          test -s "$tmp/logs/$scan_id.log"
+          test -s "$tmp/state/$scan_id.json"
 
       - name: Exercise Nuclei fail-closed states
         run: |
