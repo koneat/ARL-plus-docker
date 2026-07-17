@@ -1,0 +1,118 @@
+name: scanner-api-concurrency-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scanner/scanner_api.py'
+      - 'scanner/entrypoint.sh'
+      - '.github/workflows/scanner-api-concurrency-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  concurrent-submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise concurrent queue saturation
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          cat >"$tmp/fake-runner" <<'SH'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          sleep 2
+          out="$SCANNER_V2_RESULT_ROOT/$SCAN_ID"
+          mkdir -p "$out"
+          printf '{}\n' >"$out/summary.json"
+          printf '{"scanner_v2":true,"quality_upgrade":true}\n' >"$out/quality-status.json"
+          printf '{"status":"completed_zero_findings"}\n' >"$out/nuclei-status.json"
+          printf '<html>ok</html>\n' >"$out/report.html"
+          SH
+          chmod 0755 "$tmp/fake-runner"
+
+          export SCANNER_V2_RESULT_ROOT="$tmp/results"
+          export SCANNER_V2_STATE_ROOT="$tmp/state"
+          export SCANNER_V2_LOG_ROOT="$tmp/logs"
+          export SCANNER_V2_INPUT_ROOT="$tmp/input"
+          export SCANNER_V2_RUNNER="$tmp/fake-runner"
+          export SCANNER_V2_PORT=18091
+          export SCANNER_V2_WORKERS=1
+          export SCANNER_V2_MAX_QUEUE=2
+
+          python3 scanner/scanner_api.py >"$tmp/api.log" 2>&1 &
+          api_pid=$!
+          trap 'kill $api_pid 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do
+            curl -fsS http://127.0.0.1:18091/healthz >/dev/null && break
+            sleep 0.1
+          done
+
+          python3 - "$tmp" <<'PY'
+          from concurrent.futures import ThreadPoolExecutor
+          import json
+          from pathlib import Path
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          root = Path(sys.argv[1])
+
+          def submit(index):
+              body = json.dumps({
+                  "name": f"concurrent-{index}",
+                  "targets": "example.com",
+                  "mode": "fast",
+              }).encode()
+              request = urllib.request.Request(
+                  "http://127.0.0.1:18091/scans",
+                  data=body,
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=10) as response:
+                      return response.status, json.load(response)
+              except urllib.error.HTTPError as exc:
+                  return exc.code, json.loads(exc.read().decode())
+
+          with ThreadPoolExecutor(max_workers=12) as pool:
+              responses = list(pool.map(submit, range(12)))
+
+          codes = [code for code, _ in responses]
+          assert set(codes).issubset({202, 503}), codes
+          accepted = [data for code, data in responses if code == 202]
+          rejected = [data for code, data in responses if code == 503]
+          assert accepted, responses
+          assert rejected, responses
+          assert all(item.get("error") == "queue_full" for item in rejected), rejected
+          assert all("target_file" not in item for item in accepted), accepted
+
+          accepted_ids = {item["scan_id"] for item in accepted}
+          state_ids = {path.stem for path in (root / "state").glob("*.json")}
+          assert state_ids == accepted_ids, (state_ids, accepted_ids)
+
+          deadline = time.time() + 30
+          while time.time() < deadline:
+              states = []
+              for scan_id in accepted_ids:
+                  with urllib.request.urlopen(
+                      f"http://127.0.0.1:18091/scans/{scan_id}", timeout=5
+                  ) as response:
+                      states.append(json.load(response))
+              if all(item.get("status") == "completed" for item in states):
+                  break
+              time.sleep(0.2)
+          else:
+              raise AssertionError(states)
+
+          assert not list((root / "input").glob("*.targets.txt"))
+          assert len(list((root / "logs").glob("*.log"))) == len(accepted_ids)
+          print(json.dumps({"codes": codes, "accepted": sorted(accepted_ids)}, indent=2))
+          PY
+
+          ! grep -Eiq 'Traceback|unhandled exception' "$tmp/api.log"
