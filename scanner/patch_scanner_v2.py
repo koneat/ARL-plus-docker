@@ -38,6 +38,53 @@ v2_path.write_text(v2_text, encoding='utf-8')
 
 scan_path = Path('/opt/scanner/run-scan.sh')
 scan_text = scan_path.read_text(encoding='utf-8')
+
+old_dnsx = '''dnsx_stage() {
+  : >"$OUT/dnsx.jsonl"
+  [[ -s "$OUT/domains.all.txt" ]] || return 0
+  dnsx -l "$OUT/domains.all.txt" -silent -a -resp -json -o "$OUT/dnsx.jsonl"
+}
+'''
+new_dnsx = '''dnsx_stage() {
+  : >"$OUT/dnsx.jsonl"
+  : >"$OUT/dnsx.ips.txt"
+  [[ -s "$OUT/domains.all.txt" ]] || return 0
+
+  local rc=0
+  dnsx \
+    -l "$OUT/domains.all.txt" \
+    -silent -a -resp -json -omit-raw -duc \
+    -o "$OUT/dnsx.jsonl" || rc=$?
+
+  # 直接使用 DNSX 官方 resp-only 输出，不依赖不同版本的 JSON 包装结构。
+  dnsx \
+    -l "$OUT/domains.all.txt" \
+    -silent -a -resp-only -duc \
+    -o "$OUT/dnsx.ips.txt" || rc=$?
+
+  if [[ -s "$OUT/dnsx.ips.txt" ]]; then
+    python3 - "$OUT/dnsx.ips.txt" <<'PY'
+import ipaddress
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+values = set()
+for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    try:
+        values.add(str(ipaddress.ip_address(raw.strip())))
+    except ValueError:
+        pass
+path.write_text("".join(value + "\\n" for value in sorted(values)), encoding="utf-8")
+PY
+  fi
+  return "$rc"
+}
+'''
+if old_dnsx not in scan_text:
+    raise SystemExit('run-scan.sh DNSX stage not found')
+scan_text = scan_text.replace(old_dnsx, new_dnsx, 1)
+
 old_targets = '''if [[ -s "$OUT/dnsx.jsonl" ]]; then
   jq -r '.host // .input // empty' "$OUT/dnsx.jsonl" | sort -u >"$OUT/dnsx.hosts.txt" || true
 else
@@ -49,40 +96,12 @@ cat "$OUT/domains.all.txt" "$OUT/ips.txt" "$OUT/cidrs.txt" 2>/dev/null | \\
 '''
 new_targets = '''if [[ -s "$OUT/dnsx.jsonl" ]]; then
   jq -r '.host // .input // empty' "$OUT/dnsx.jsonl" | sort -u >"$OUT/dnsx.hosts.txt" || true
-  python3 - "$OUT/dnsx.jsonl" "$OUT/dnsx.ips.txt" <<'PY'
-import ipaddress
-import json
-import sys
-from pathlib import Path
-
-source = Path(sys.argv[1])
-target = Path(sys.argv[2])
-values = set()
-for raw in source.read_text(encoding="utf-8", errors="ignore").splitlines():
-    try:
-        item = json.loads(raw)
-    except Exception:
-        continue
-    for key in ("a", "aaaa"):
-        current = item.get(key, [])
-        if isinstance(current, str):
-            current = [current]
-        if not isinstance(current, list):
-            continue
-        for value in current:
-            try:
-                values.add(str(ipaddress.ip_address(str(value).strip())))
-            except ValueError:
-                pass
-target.write_text("".join(value + "\\n" for value in sorted(values)), encoding="utf-8")
-PY
 else
   : >"$OUT/dnsx.hosts.txt"
-  : >"$OUT/dnsx.ips.txt"
 fi
 
 # Naabu 对容器内部 DNS 别名和分流 DNS 的解析不一定与 DNSX 一致。
-# 保留域名用于正常公网扫描，同时复用 DNSX 已验证的 A/AAAA 地址，避免
+# 保留域名用于正常公网扫描，同时复用 DNSX 已验证的 A 地址，避免
 # “DNSX 已解析但 Naabu 报 no valid targets”的假失败。
 cat "$OUT/domains.all.txt" "$OUT/dnsx.ips.txt" "$OUT/ips.txt" "$OUT/cidrs.txt" 2>/dev/null | \\
   sed '/^[[:space:]]*$/d' | sort -u >"$OUT/portscan.targets.txt"
