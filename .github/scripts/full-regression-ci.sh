@@ -54,6 +54,25 @@ source = source.replace(
     "    -e ENABLE_NAABU=true \\\n    -e CUSTOM_PORTS=8080 \\\n    -e NAABU_SERVICE_VERSION_OVERRIDE=false \\",
     1,
 )
+
+runtime_permissions = '''  chmod 755 "$work/results" "$work/config" "$work/templates" "$work/pocs" "$work/pocs/nuclei" "$work/pocs/afrog"
+'''
+runtime_permissions_fixed = runtime_permissions + '''  # 生产安装器以 root 创建这些目录；cap_drop=ALL 后容器不能绕过错误属主。
+  sudo chown -R 0:0 "$work/results" "$work/config" "$work/templates"
+'''
+if runtime_permissions not in source:
+    raise SystemExit('runtime permission block not found')
+source = source.replace(runtime_permissions, runtime_permissions_fixed, 1)
+
+compose_permissions = '''  chmod 644 "$ARL_REPORT_ROOT/index.html" "$ARL_REPORT_ROOT/xray/index.html" "$ARL_REPORT_ROOT/scanner/index.html"
+'''
+compose_permissions_fixed = compose_permissions + '''  # 模拟正式安装器的 root:root Scanner 写入目录。
+  sudo chown 0:0 "$ARL_REPORT_ROOT/scanner"
+'''
+if compose_permissions not in source:
+    raise SystemExit('compose permission block not found')
+source = source.replace(compose_permissions, compose_permissions_fixed, 1)
+
 old = """  docker compose exec -T web test -r /code/frontend/report/xray/index.html
   docker compose exec -T web test -r /code/frontend/report/scanner/index.html
   docker compose exec -T mcp-local python -c 'import json,urllib.request; d=json.load(urllib.request.urlopen(\"http://scanner-v2:8090/healthz\", timeout=5)); assert d[\"scanner_v2_reachable\"] is True'
