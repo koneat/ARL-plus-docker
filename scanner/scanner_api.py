@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import html
 import json
 import os
 import queue
@@ -20,7 +21,8 @@ from urllib.parse import urlparse
 HOST = os.getenv("SCANNER_V2_HOST", "0.0.0.0")
 PORT = int(os.getenv("SCANNER_V2_PORT", "8090"))
 RESULT_ROOT = Path(os.getenv("SCANNER_V2_RESULT_ROOT", "/work/results"))
-STATE_ROOT = RESULT_ROOT / ".scanner-api"
+STATE_ROOT = Path(os.getenv("SCANNER_V2_STATE_ROOT", "/root/.config/scanner-api"))
+LOG_ROOT = Path(os.getenv("SCANNER_V2_LOG_ROOT", str(STATE_ROOT / "logs")))
 INPUT_ROOT = Path(os.getenv("SCANNER_V2_INPUT_ROOT", "/work/input/api"))
 RUNNER = Path(os.getenv("SCANNER_V2_RUNNER", "/opt/scanner/run-scan-v2.sh"))
 WORKERS = max(1, min(int(os.getenv("SCANNER_V2_WORKERS", "1")), 4))
@@ -40,6 +42,7 @@ TOOLS = [
 
 _jobs: "queue.Queue[str]" = queue.Queue(maxsize=MAX_QUEUE)
 _state_lock = threading.RLock()
+_submit_lock = threading.Lock()
 
 
 def utc_now() -> str:
@@ -83,6 +86,12 @@ def load_state(scan_id: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def public_state(state: dict[str, Any]) -> dict[str, Any]:
+    result = dict(state)
+    result.pop("target_file", None)
+    return result
+
+
 def count_lines(path: Path) -> int:
     try:
         with path.open("r", encoding="utf-8", errors="ignore") as handle:
@@ -99,7 +108,6 @@ def report_urls(scan_id: str) -> dict[str, str]:
         "summary_markdown": f"{base}/summary.md",
         "quality_status": f"{base}/quality-status.json",
         "nuclei_status": f"{base}/nuclei-status.json",
-        "log": f"{base}/scanner-api.log",
     }
 
 
@@ -139,11 +147,15 @@ def write_index() -> None:
         status = str(state.get("status") or "unknown")
         updated = str(state.get("updated_at") or "-")
         report = f"{scan_id}/report.html" if (RESULT_ROOT / scan_id / "report.html").is_file() else ""
-        report_link = f'<a href="{report}">打开报告</a>' if report else "-"
-        safe_name = name.replace("&", "&amp;").replace("<", "&lt;")
+        report_link = f'<a href="{html.escape(report, quote=True)}">打开报告</a>' if report else "-"
         rows.append(
             "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
-                safe_name, scan_id, mode, status, updated, report_link
+                html.escape(name),
+                html.escape(scan_id),
+                html.escape(mode),
+                html.escape(status),
+                html.escape(updated),
+                report_link,
             )
         )
     body = "".join(rows) or '<tr><td colspan="6">还没有 Scanner V2 增强扫描任务。</td></tr>'
@@ -201,11 +213,24 @@ def capabilities() -> dict[str, Any]:
     }
 
 
+def cleanup_target_file(state: dict[str, Any]) -> None:
+    raw = str(state.get("target_file") or "").strip()
+    if not raw:
+        return
+    try:
+        path = Path(raw)
+        if path.parent.resolve() == INPUT_ROOT.resolve():
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def recover_states() -> None:
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     for path in STATE_ROOT.glob("*.json"):
         state = read_json(path, {})
         if isinstance(state, dict) and state.get("status") in {"queued", "running"}:
+            cleanup_target_file(state)
             state.update(
                 status="interrupted",
                 quality_upgrade=True,
@@ -213,6 +238,7 @@ def recover_states() -> None:
                 ended_at=utc_now(),
                 updated_at=utc_now(),
             )
+            state.pop("target_file", None)
             atomic_json(path, state)
     write_index()
 
@@ -224,7 +250,8 @@ def execute_scan(scan_id: str) -> None:
     target_file = Path(str(state["target_file"]))
     out = RESULT_ROOT / scan_id
     out.mkdir(parents=True, exist_ok=True)
-    log_path = out / "scanner-api.log"
+    LOG_ROOT.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_ROOT / f"{scan_id}.log"
     env = os.environ.copy()
     env["SCAN_ID"] = scan_id
     env["ENABLE_SCANNER_V2"] = "true"
@@ -253,12 +280,22 @@ def execute_scan(scan_id: str) -> None:
             report_exists=(out / "report.html").is_file(),
             summary_exists=(out / "summary.json").is_file(),
             quality=artifact_summary(scan_id).get("quality", {}),
+            target_file=None,
         )
     except Exception as exc:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write("\n[scanner-api] unhandled exception\n")
             handle.write(traceback.format_exc())
-        save_state(scan_id, status="failed", exit_code=-1, ended_at=utc_now(), error=str(exc))
+        save_state(
+            scan_id,
+            status="failed",
+            exit_code=-1,
+            ended_at=utc_now(),
+            error=str(exc),
+            target_file=None,
+        )
+    finally:
+        cleanup_target_file(state)
 
 
 def worker_loop() -> None:
@@ -279,8 +316,44 @@ def start_workers() -> None:
         ).start()
 
 
+def submit_scan(name: str, mode: str, targets: str) -> dict[str, Any]:
+    scan_id = make_scan_id(name)
+    INPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    target_file = INPUT_ROOT / f"{scan_id}.targets.txt"
+    state = {
+        "scan_id": scan_id,
+        "name": name[:160],
+        "mode": mode,
+        "status": "queued",
+        "quality_upgrade": True,
+        "engine": "scanner_v2",
+        "legacy_native_restart": False,
+        "target_count": sum(1 for line in targets.splitlines() if line.strip()),
+        "target_file": str(target_file),
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+        "report_urls": report_urls(scan_id),
+    }
+
+    with _submit_lock:
+        if _jobs.full():
+            raise queue.Full
+        target_file.write_text(targets.rstrip() + "\n", encoding="utf-8")
+        target_file.chmod(0o600)
+        try:
+            atomic_json(state_path(scan_id), state)
+            _jobs.put_nowait(scan_id)
+            with _state_lock:
+                write_index()
+        except Exception:
+            target_file.unlink(missing_ok=True)
+            state_path(scan_id).unlink(missing_ok=True)
+            raise
+    return public_state(state)
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ARLScannerV2/1.0"
+    server_version = "ARLScannerV2/1.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[scanner-api] {self.address_string()} {fmt % args}", flush=True)
@@ -336,9 +409,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if match.group(2):
                 payload = artifact_summary(scan_id)
-                payload["state"] = state
+                payload["state"] = public_state(state)
             else:
-                payload = state
+                payload = public_state(state)
                 payload["report_urls"] = report_urls(scan_id)
             self.send_json(HTTPStatus.OK, payload)
             return
@@ -365,32 +438,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("targets cannot be empty")
             if len(raw) > MAX_TARGET_BYTES:
                 raise ValueError(f"targets exceed {MAX_TARGET_BYTES} bytes")
-            if _jobs.full():
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "queue_full"})
-                return
-            scan_id = make_scan_id(name)
-            INPUT_ROOT.mkdir(parents=True, exist_ok=True)
-            target_file = INPUT_ROOT / f"{scan_id}.targets.txt"
-            target_file.write_text(targets.rstrip() + "\n", encoding="utf-8")
-            target_file.chmod(0o600)
-            state = {
-                "scan_id": scan_id,
-                "name": name[:160],
-                "mode": mode,
-                "status": "queued",
-                "quality_upgrade": True,
-                "engine": "scanner_v2",
-                "legacy_native_restart": False,
-                "target_count": sum(1 for line in targets.splitlines() if line.strip()),
-                "target_file": str(target_file),
-                "created_at": utc_now(),
-                "updated_at": utc_now(),
-                "report_urls": report_urls(scan_id),
-            }
-            atomic_json(state_path(scan_id), state)
-            write_index()
-            _jobs.put_nowait(scan_id)
+            state = submit_scan(name, mode, targets)
             self.send_json(HTTPStatus.ACCEPTED, state)
+        except queue.Full:
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "queue_full"})
         except ValueError as exc:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_request", "message": str(exc)})
         except Exception as exc:
@@ -400,6 +451,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     RESULT_ROOT.mkdir(parents=True, exist_ok=True)
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    LOG_ROOT.mkdir(parents=True, exist_ok=True)
     INPUT_ROOT.mkdir(parents=True, exist_ok=True)
     recover_states()
     start_workers()
