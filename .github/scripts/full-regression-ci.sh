@@ -22,12 +22,43 @@ docker() {
 export -f docker
 
 # 原回归脚本退出时会立即删除容器，导致 Actions 的失败诊断看不到现场。
-# CI 副本只移除 EXIT 清理 trap；工作流的 always() 步骤统一负责最终清理。
+# CI 副本移除 EXIT 清理 trap，并修正两个仅影响测试编排的问题：
+# 1. heredoc 必须通过 docker exec -i 传入；2. MCP 检查前等待 Scanner 健康。
 python3 - .github/scripts/full-regression.sh "$runner" <<'PY'
 from pathlib import Path
 import sys
 
 source = Path(sys.argv[1]).read_text(encoding='utf-8')
+source = source.replace(
+    "docker exec arl-e2e-mcp-auth python - <<'PY'",
+    "docker exec -i arl-e2e-mcp-auth python - <<'PY'",
+    1,
+)
+old = """  docker compose exec -T web test -r /code/frontend/report/xray/index.html
+  docker compose exec -T web test -r /code/frontend/report/scanner/index.html
+  docker compose exec -T mcp-local python -c 'import json,urllib.request; d=json.load(urllib.request.urlopen(\"http://scanner-v2:8090/healthz\", timeout=5)); assert d[\"scanner_v2_reachable\"] is True'
+  docker compose ps
+"""
+new = """  docker compose exec -T web test -r /code/frontend/report/xray/index.html
+  docker compose exec -T web test -r /code/frontend/report/scanner/index.html
+  scanner_ready=false
+  for _ in $(seq 1 90); do
+    if docker compose exec -T mcp-local python -c 'import json,urllib.request; d=json.load(urllib.request.urlopen(\"http://scanner-v2:8090/healthz\", timeout=5)); assert d[\"scanner_v2_reachable\"] is True' >/dev/null 2>&1; then
+      scanner_ready=true
+      break
+    fi
+    sleep 2
+  done
+  [[ \"$scanner_ready\" == true ]] || {
+    docker compose logs --tail=200 scanner-v2 mcp-local
+    die \"MCP cannot reach healthy Scanner V2\"
+  }
+  docker compose ps
+"""
+if old not in source:
+    raise SystemExit('compose Scanner readiness block not found')
+source = source.replace(old, new, 1)
+
 lines = []
 for line in source.splitlines():
     stripped = line.strip()
