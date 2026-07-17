@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.1
+# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.2
 set -Eeuo pipefail
 umask 077
 
@@ -27,6 +27,52 @@ cleanup() {
 }
 trap cleanup EXIT
 
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  python3 - "$ENV_FILE" "$key" "$value" <<'PY'
+import os
+import re
+import shlex
+import sys
+import tempfile
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+    raise SystemExit("invalid env key")
+lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+pattern = re.compile(r"^[ \t]*(?:export[ \t]+)?" + re.escape(key) + r"=")
+replacement = key + "=" + shlex.quote(value) + "\n"
+output = []
+found = False
+for line in lines:
+    if pattern.match(line):
+        if not found:
+            output.append(replacement)
+            found = True
+        continue
+    output.append(line)
+if not found:
+    if output and not output[-1].endswith(("\n", "\r")):
+        output[-1] += "\n"
+    output.append(replacement)
+fd, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=str(path.parent))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.writelines(output)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+}
+
 [[ "$(id -u)" -eq 0 ]] || die '请使用 root 运行本脚本'
 [[ -r /etc/os-release ]] || die '无法识别操作系统'
 # shellcheck disable=SC1091
@@ -39,6 +85,34 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=5 update
 apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=5 install -y \
   ca-certificates curl git jq python3 util-linux netcat-openbsd unzip tmux wget
+
+# 完整模式只写白名单开关；已有密钥、MongoDB URI 和情报平台 Token 保持原样。
+set_env_value REPO_URL "$REPO_URL"
+set_env_value REPO_BRANCH "$RELEASE_BRANCH"
+set_env_value ARL_DIR "$ARL_DIR"
+set_env_value ENABLE_CHAITIN_XRAY true
+set_env_value ENABLE_SMART_WILDCARD true
+set_env_value ENABLE_SCANNER_STACK true
+set_env_value BUILD_SCANNER_IMAGE true
+set_env_value ENABLE_WORKER_EXTENSIONS true
+set_env_value INSTALL_CHROMIUM true
+set_env_value ARL_AUTO_AFROG_SCAN true
+set_env_value ARL_REQUIRE_XRAY_PROXY true
+set_env_value ENABLE_SUBFINDER true
+set_env_value ENABLE_UNCOVER true
+set_env_value ENABLE_NAABU true
+set_env_value ENABLE_KATANA true
+set_env_value ENABLE_SOURCEMAP true
+set_env_value ENABLE_PASSIVE_URLS true
+set_env_value ENABLE_TLSX true
+set_env_value ENABLE_CDNCHECK true
+set_env_value ENABLE_CONTENT_AUDIT true
+set_env_value ENABLE_NUCLEI true
+set_env_value ENABLE_AFROG true
+set_env_value ENABLE_FFUF true
+set_env_value REPORT_ROOT /var/lib/arl-reports
+set_env_value REPORT_WORLD_READABLE false
+chmod 0600 "$ENV_FILE"
 
 TMP_DIR="$(mktemp -d /tmp/arl-private-complete.XXXXXX)"
 log "克隆完整发布分支：$RELEASE_BRANCH"
