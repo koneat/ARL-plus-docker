@@ -74,10 +74,11 @@ PY
   (
     cd "$ARL_DIR"
     docker compose -f docker-compose.scanner.yml --profile scanner config >/dev/null
-    if [[ "$BUILD_SCANNER_IMAGE" == "true" ]]; then
-      log "构建独立实战 Scanner 镜像"
-      docker compose -f docker-compose.scanner.yml --profile scanner build --pull scanner
-    fi
+    local scanner_image
+    scanner_image="${ARL_SCANNER_V2_IMAGE:-arl-plus-scanner:2026.07-v2-control}"
+    docker image inspect "$scanner_image" >/dev/null 2>&1 ||
+      die "独立 Scanner 复用镜像不存在：$scanner_image"
+    ok "独立 Scanner 复用已构建的 Scanner V2 镜像：$scanner_image"
   )
   chmod 0755 "${ARL_DIR}/scripts/scan-enhanced.sh"
   ok "独立实战扫描链已准备完成"

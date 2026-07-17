@@ -1,0 +1,171 @@
+name: full-regression
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILDKIT_PROGRESS: quiet
+  COMPOSE_PROGRESS: quiet
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run static and installer checks
+        run: bash .github/scripts/full-regression-static.sh
+
+  build-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
+          docker system prune -af || true
+          df -h
+      - name: Build formal Scanner V2 and MCP images once
+        run: |
+          set -Eeuo pipefail
+          docker build --quiet -t arl-e2e-scanner-image ./scanner
+          docker build --quiet -t arl-e2e-mcp-image ./mcp
+          docker save arl-e2e-scanner-image arl-e2e-mcp-image | gzip -1 >regression-images.tar.gz
+          ls -lh regression-images.tar.gz
+      - name: Upload formal images
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-images
+          path: regression-images.tar.gz
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  scanner-mcp-runtime:
+    needs: build-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: regression-images
+      - name: Load formal images
+        run: gzip -dc regression-images.tar.gz | docker load
+      - name: Run Scanner V2 and MCP end-to-end
+        env:
+          REGRESSION_IMAGES_PREBUILT: 'true'
+        run: bash .github/scripts/full-regression-ci.sh runtime
+      - name: Verify restricted Naabu connect scan
+        run: |
+          set -Eeuo pipefail
+          docker exec arl-e2e-scanner sh -lc \
+            "grep -Eq '(^|:|\\])8080$' /work/results/latest/open-services.txt"
+      - name: Submit and query enhanced scan through MCP
+        run: docker exec -i arl-e2e-mcp python - <.github/scripts/mcp-enhanced-e2e.py
+      - name: Collect Scanner/MCP diagnostics
+        if: failure()
+        run: |
+          mkdir -p diagnostics
+          {
+            echo '=== docker ps ==='
+            docker ps -a || true
+            for c in arl-e2e-scanner arl-e2e-mcp arl-e2e-mcp-auth arl-e2e-fixture; do
+              echo "=== $c inspect ==="
+              docker inspect "$c" 2>&1 || true
+              echo "=== $c logs ==="
+              docker logs --tail=500 "$c" 2>&1 || true
+            done
+            echo '=== result files ==='
+            find /tmp -path '*/results/*' -maxdepth 9 -type f -printf '%M %u:%g %p %s bytes\n' 2>/dev/null | sort || true
+            echo '=== selected result content ==='
+            find /tmp -path '*/results/*' -type f \
+              \( -name 'quality-status.json' -o -name 'nuclei-status.json' -o -name 'summary.json' -o -name 'errors.log' -o -name 'scanner-api.log' \) \
+              -exec sh -c 'echo "--- $1"; tail -n 300 "$1"' _ {} \; 2>/dev/null || true
+            echo '=== disk ==='
+            df -h || true
+          } >diagnostics/scanner-mcp.txt 2>&1
+          tail -n 400 diagnostics/scanner-mcp.txt
+      - name: Upload Scanner/MCP diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-mcp-diagnostics
+          path: diagnostics/scanner-mcp.txt
+          if-no-files-found: error
+      - name: Cleanup Scanner/MCP runtime
+        if: always()
+        run: |
+          docker rm -f arl-e2e-mcp-auth arl-e2e-mcp arl-e2e-scanner arl-e2e-fixture >/dev/null 2>&1 || true
+          docker network rm arl-e2e >/dev/null 2>&1 || true
+
+  compose-runtime:
+    needs: build-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: regression-images
+      - name: Load and tag formal images
+        run: |
+          gzip -dc regression-images.tar.gz | docker load
+          docker tag arl-e2e-scanner-image arl-plus-scanner:2026.07-v2-control
+          docker tag arl-e2e-mcp-image arl-plus-docker-mcp-local
+          docker tag arl-e2e-mcp-image arl-plus-docker-mcp
+      - name: Run real Compose topology
+        env:
+          REGRESSION_IMAGES_PREBUILT: 'true'
+        run: bash .github/scripts/full-regression-ci.sh compose
+      - name: Collect Compose diagnostics
+        if: failure()
+        run: |
+          mkdir -p diagnostics
+          {
+            echo '=== docker ps ==='
+            docker ps -a || true
+            echo '=== compose logs ==='
+            docker compose logs --tail=500 --no-color || true
+            echo '=== container inspect ==='
+            for c in arl_web arl_scanner_v2 arl_mcp_local arl_mongodb arl_rabbitmq; do
+              echo "--- $c"
+              docker inspect "$c" 2>&1 || true
+            done
+            echo '=== rendered mounts and dependencies ==='
+            docker compose config | sed -n '/services:/,$p' | grep -n -A12 -B12 '/code/frontend/report\|/work/results\|scanner-v2\|mcp-local' || true
+            echo '=== report trees ==='
+            find /tmp -path '*/reports*' -maxdepth 8 -printf '%M %u:%g %p %s bytes\n' 2>/dev/null | sort || true
+            echo '=== HTTP probes ==='
+            for path in / /report/ /report/index.html /xray/index.html /report/scanner/index.html; do
+              code="$(curl -k -sS -o /tmp/compose-probe-body -w '%{http_code}' --connect-timeout 3 --max-time 10 "https://127.0.0.1:5003$path" || true)"
+              echo "$path -> $code"
+              head -c 400 /tmp/compose-probe-body 2>/dev/null || true
+              echo
+            done
+            echo '=== disk ==='
+            df -h || true
+          } >diagnostics/compose.txt 2>&1
+          tail -n 400 diagnostics/compose.txt
+      - name: Upload Compose diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-diagnostics
+          path: diagnostics/compose.txt
+          if-no-files-found: error
+      - name: Cleanup Compose runtime
+        if: always()
+        run: |
+          docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+          docker volume rm arl_db >/dev/null 2>&1 || true

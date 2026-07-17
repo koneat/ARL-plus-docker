@@ -30,21 +30,40 @@ deploy_services() {
   clear_missing_local_image_selection ARL_WORKER_IMAGE
   clear_missing_local_image_selection ARL_SCHEDULER_IMAGE
 
+  local scanner_report_dir
+  scanner_report_dir="${REPORT_ROOT}/scanner"
+
   mkdir -p \
-    scan-results \
+    "$scanner_report_dir" \
     scanner-cache/config \
     scanner-cache/nuclei-templates \
     scanner-pocs/nuclei \
     scanner-pocs/afrog \
     scanner-secrets
-  chmod 700 scanner-secrets 2>/dev/null || true
+  chmod 0755 "$scanner_report_dir" 2>/dev/null || true
+  chmod 0700 scanner-secrets 2>/dev/null || true
 
   log "拉取基础 ARL、MongoDB 与 RabbitMQ 镜像"
   docker pull "$ARL_BASE_IMAGE"
   docker compose pull mongodb rabbitmq
 
-  log "构建 Scanner V2 与 MCP 镜像"
-  docker compose build --pull scanner-v2 mcp-local mcp
+  local scanner_image env_tool
+  scanner_image="${ARL_SCANNER_V2_IMAGE:-arl-plus-scanner:2026.07-v2-control}"
+  env_tool="${ARL_DIR}/scripts/compose-env.py"
+  [[ -f "$env_tool" ]] || die "仓库缺少 scripts/compose-env.py"
+  python3 "$env_tool" "${ARL_DIR}/.env" set ARL_SCANNER_V2_IMAGE "$scanner_image"
+
+  if [[ "$BUILD_SCANNER_IMAGE" == "true" ]]; then
+    log "构建 Scanner V2 镜像"
+    docker compose build --pull scanner-v2
+  elif docker image inspect "$scanner_image" >/dev/null 2>&1; then
+    ok "BUILD_SCANNER_IMAGE=false，复用现有 Scanner V2 镜像：$scanner_image"
+  else
+    die "BUILD_SCANNER_IMAGE=false，但本机缺少 Scanner V2 镜像：$scanner_image"
+  fi
+
+  log "构建 MCP 镜像"
+  docker compose build --pull mcp-local mcp
 
   log "启动 ARL、Scanner V2、RabbitMQ、MongoDB、Worker、Scheduler 与 MCP"
   docker compose up -d --remove-orphans
