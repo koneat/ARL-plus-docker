@@ -1,0 +1,14 @@
+services:
+  mcp-local:
+    depends_on:
+      web:
+        condition: service_started
+      scanner-v2:
+        condition: service_healthy
+
+  mcp:
+    depends_on:
+      web:
+        condition: service_started
+      scanner-v2:
+        condition: service_healthy
