@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 ALLOWED_KEYS = (
+    "ARL_SCANNER_V2_IMAGE",
     "SCANNER_V2_WORKERS",
     "SCANNER_V2_MAX_QUEUE",
     "SCANNER_V2_TIMEOUT",
