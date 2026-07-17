@@ -4,15 +4,26 @@ set -Eeuo pipefail
 mode="${1:?mode required}"
 runner='.github/scripts/.full-regression-ci-run.sh'
 
-# GitHub Actions 日志容量有限。正式镜像仍从零完整构建，但仅输出最终镜像 ID，
-# 将日志预算留给实际启动、扫描、报告和鉴权错误。
+# GitHub Actions 日志容量有限。正式镜像由 build-images 作业从零构建一次；
+# 两个运行测试加载完全相同的镜像，避免重复编译造成无意义等待。
 docker() {
   if [[ "${1:-}" == "build" ]]; then
+    if [[ "${REGRESSION_IMAGES_PREBUILT:-false}" == true ]]; then
+      command docker image inspect arl-e2e-scanner-image >/dev/null
+      command docker image inspect arl-e2e-mcp-image >/dev/null
+      return
+    fi
     shift
     command docker build --quiet "$@"
     return
   fi
   if [[ "${1:-}" == "compose" && "${2:-}" == "build" ]]; then
+    if [[ "${REGRESSION_IMAGES_PREBUILT:-false}" == true ]]; then
+      command docker image inspect arl-plus-scanner:2026.07-v2-control >/dev/null
+      command docker image inspect arl-plus-docker-mcp-local >/dev/null
+      command docker image inspect arl-plus-docker-mcp >/dev/null
+      return
+    fi
     shift 2
     command docker compose build --quiet "$@"
     return
