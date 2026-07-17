@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.3
+# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.4
 set -Eeuo pipefail
 umask 077
 
@@ -26,6 +26,47 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT
+
+apt_update_resilient() {
+  local attempt max_attempts=6 delay_seconds
+  for attempt in $(seq 1 "$max_attempts"); do
+    if apt-get \
+      -o DPkg::Lock::Timeout=300 \
+      -o Binary::apt-get::DPkg::Lock::Timeout=300 \
+      -o Acquire::Retries=5 \
+      -o Acquire::Languages=none \
+      update; then
+      return 0
+    fi
+    (( attempt < max_attempts )) || break
+    delay_seconds=$((attempt * 5))
+    warn "APT 索引更新失败，第 ${attempt}/${max_attempts} 次；${delay_seconds} 秒后重试"
+    rm -rf /var/lib/apt/lists/partial/*
+    apt-get clean || true
+    sleep "$delay_seconds"
+  done
+  die "APT 索引连续 ${max_attempts} 次更新失败"
+}
+
+install_bootstrap_dependencies() {
+  local command_name missing=false
+  for command_name in curl git jq python3 flock nc unzip tmux wget; do
+    command -v "$command_name" >/dev/null 2>&1 || {
+      missing=true
+      break
+    }
+  done
+  [[ "$missing" == true ]] || return 0
+  export DEBIAN_FRONTEND=noninteractive
+  apt_update_resilient
+  apt-get \
+    -o DPkg::Lock::Timeout=300 \
+    -o Binary::apt-get::DPkg::Lock::Timeout=300 \
+    -o Acquire::Retries=5 \
+    -o Acquire::Languages=none \
+    install -y ca-certificates curl git jq python3 util-linux \
+      netcat-openbsd unzip tmux wget
+}
 
 set_env_value() {
   local key="$1"
@@ -80,11 +121,7 @@ PY
 [[ "${ID:-}" == ubuntu ]] || die "当前只支持 Ubuntu：${PRETTY_NAME:-unknown}"
 [[ -s "$ENV_FILE" ]] || die "缺少本机私密配置：$ENV_FILE"
 chmod 0600 "$ENV_FILE"
-
-export DEBIAN_FRONTEND=noninteractive
-apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=5 update
-apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=5 install -y \
-  ca-certificates curl git jq python3 util-linux netcat-openbsd unzip tmux wget
+install_bootstrap_dependencies
 
 # 完整模式只写白名单开关；已有密钥、MongoDB URI 和情报平台 Token 保持原样。
 set_env_value REPO_URL "$REPO_URL"
