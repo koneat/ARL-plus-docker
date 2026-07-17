@@ -47,8 +47,11 @@ deploy_services() {
   docker pull "$ARL_BASE_IMAGE"
   docker compose pull mongodb rabbitmq
 
-  local scanner_image
+  local scanner_image env_tool
   scanner_image="${ARL_SCANNER_V2_IMAGE:-arl-plus-scanner:2026.07-v2-control}"
+  env_tool="${ARL_DIR}/scripts/compose-env.py"
+  [[ -f "$env_tool" ]] || die "仓库缺少 scripts/compose-env.py"
+  python3 "$env_tool" "${ARL_DIR}/.env" set ARL_SCANNER_V2_IMAGE "$scanner_image"
 
   if [[ "$BUILD_SCANNER_IMAGE" == "true" ]]; then
     log "构建 Scanner V2 镜像"
