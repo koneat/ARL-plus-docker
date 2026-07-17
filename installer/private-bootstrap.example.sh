@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-final.2
+# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-final.3
 set -Eeuo pipefail
 umask 077
 
@@ -17,7 +17,8 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -r "$COMPLETE_BOOTSTRAP" ]]; then
-  exec bash "$COMPLETE_BOOTSTRAP" "$@"
+  bash "$COMPLETE_BOOTSTRAP" "$@"
+  exit $?
 fi
 
 [[ "$(id -u)" -eq 0 ]] || {
@@ -37,4 +38,4 @@ COMPLETE_BOOTSTRAP="$TMP_DIR/repo/installer/private-bootstrap-complete.sh"
   echo '[FATAL] 发布分支缺少完整私密启动器' >&2
   exit 1
 }
-exec bash "$COMPLETE_BOOTSTRAP" "$@"
+bash "$COMPLETE_BOOTSTRAP" "$@"
