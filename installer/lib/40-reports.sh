@@ -1,7 +1,14 @@
 # shellcheck shell=bash
 
 prepare_reports() {
-  install -d -m 0755 "$REPORT_ROOT" "$REPORT_ROOT/xray" "$REPORT_ROOT/xray/history" "$REPORT_ROOT/afrog"
+  # Scanner V2 以 root 身份运行，但生产 Compose 会 drop ALL capabilities。
+  # 因此不能依赖 CAP_DAC_OVERRIDE：写入目录必须明确归 root 所有。
+  install -d -o 0 -g 0 -m 0755 \
+    "$REPORT_ROOT" \
+    "$REPORT_ROOT/xray" \
+    "$REPORT_ROOT/xray/history" \
+    "$REPORT_ROOT/afrog" \
+    "$REPORT_ROOT/scanner"
 
   if [[ ! -f "$REPORT_ROOT/xray/proxy.html" ]]; then
     cat > "$REPORT_ROOT/xray/proxy.html" <<'HTML'
@@ -9,6 +16,16 @@ prepare_reports() {
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>长亭 xray 扫描报告</title></head>
 <body><h1>长亭 xray 扫描报告</h1><p>xray Webscan 已启动，发现漏洞后本页面会被报告内容替换。</p></body>
+</html>
+HTML
+  fi
+
+  if [[ ! -f "$REPORT_ROOT/scanner/index.html" ]]; then
+    cat > "$REPORT_ROOT/scanner/index.html" <<'HTML'
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Scanner V2 增强扫描</title></head>
+<body><h1>Scanner V2 增强扫描</h1><p>目前还没有 Scanner V2 增强扫描报告。</p></body>
 </html>
 HTML
   fi
@@ -66,6 +83,7 @@ root_index = """<!doctype html>
 <ul>
 <li><a href="xray/proxy.html">长亭 xray 实时报告</a></li>
 <li><a href="afrog/index.html">Afrog 扫描任务完整报告</a></li>
+<li><a href="scanner/index.html">Scanner V2 增强扫描报告</a></li>
 </ul>
 </body>
 </html>
@@ -80,6 +98,11 @@ PY
   # 不共享 UID/GID，因此 HTML/JSON 必须具备跨容器只读权限，否则会 403。
   find "$REPORT_ROOT" -type d -exec chmod 0755 {} +
   find "$REPORT_ROOT" -type f \( -name '*.html' -o -name '*.json' -o -name '*.txt' -o -name '*.csv' \) -exec chmod 0644 {} +
+
+  # 再次固定 Scanner 顶层目录所有权。现有历史任务子目录不递归改属主，
+  # 避免破坏其他服务生成的证据；Scanner 只需拥有顶层目录即可创建新批次。
+  chown 0:0 "$REPORT_ROOT/scanner"
+  chmod 0755 "$REPORT_ROOT/scanner"
 
   if [[ "$REPORT_WORLD_READABLE" == "true" ]]; then
     chmod -R a+rX "$REPORT_ROOT"
