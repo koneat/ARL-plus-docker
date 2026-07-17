@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_COMPLETE_INSTALLER_VERSION=2026.07.17-mcp-url-safe.1
+# ARL_COMPLETE_INSTALLER_VERSION=2026.07.17-mcp-url-safe.2
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,7 +39,10 @@ mcp_test_host() {
 import ipaddress
 import sys
 
-raw = sys.argv[1].strip().strip("[]")
+value = sys.argv[1]
+if value != value.strip() or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+    raise SystemExit(f"invalid control or whitespace in MCP bind IP: {value!r}")
+raw = value.strip("[]")
 if not raw:
     raw = "127.0.0.1"
 try:
