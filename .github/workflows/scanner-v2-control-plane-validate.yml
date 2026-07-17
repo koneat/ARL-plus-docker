@@ -7,7 +7,10 @@ on:
       - 'scanner/**'
       - 'mcp/**'
       - 'docker-compose.yml'
+      - 'docker-compose.override.yml'
+      - 'docker-compose.scanner.yml'
       - 'installer/lib/30-deploy.sh'
+      - 'installer/lib/80-enhancements.sh'
       - 'enhanced-worker/arl-report-index-wrapper'
       - '.github/workflows/scanner-v2-control-plane-validate.yml'
 
@@ -26,6 +29,7 @@ jobs:
           set -Eeuo pipefail
           bash -n scanner/run-nuclei-closed.sh
           bash -n installer/lib/30-deploy.sh
+          bash -n installer/lib/80-enhancements.sh
           bash -n enhanced-worker/arl-report-index-wrapper
           python -m py_compile \
             scanner/scanner_api.py \
@@ -46,6 +50,7 @@ jobs:
           grep -q 'source: /var/lib/arl-reports/scanner' /tmp/compose.yml
           grep -q 'target: /work/results' /tmp/compose.yml
           grep -q 'target: /code/frontend/report' /tmp/compose.yml
+          grep -q 'condition: service_healthy' /tmp/compose.yml
           grep -q 'scanner_api.py' scanner/Dockerfile
           grep -q 'launcher.py' mcp/Dockerfile
 
@@ -151,6 +156,11 @@ jobs:
         run: |
           set -Eeuo pipefail
           grep -q '/report/scanner/index.html' enhanced-worker/arl-report-index-wrapper
-          grep -q 'docker compose build --pull scanner-v2 mcp-local mcp' installer/lib/30-deploy.sh
+          grep -q 'if \[\[ "$BUILD_SCANNER_IMAGE" == "true" \]\]' installer/lib/30-deploy.sh
+          grep -q 'docker compose build --pull scanner-v2' installer/lib/30-deploy.sh
+          grep -q 'docker compose build --pull mcp-local mcp' installer/lib/30-deploy.sh
+          grep -q 'scanner_report_dir="${REPORT_ROOT}/scanner"' installer/lib/30-deploy.sh
+          grep -q '复用已构建的 Scanner V2 镜像' installer/lib/80-enhancements.sh
+          grep -Fq 'image: ${ARL_SCANNER_V2_IMAGE:-arl-plus-scanner:2026.07-v2-control}' docker-compose.scanner.yml
           grep -q 'Scanner V2 内部 API 未就绪' installer/lib/30-deploy.sh
           grep -q 'SCANNER_V2_REPORT_URL=' installer/lib/30-deploy.sh
