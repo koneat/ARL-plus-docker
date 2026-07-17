@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 from pathlib import Path
 
-runner_path = Path('/opt/scanner/run-scan-v2.sh')
-runner_text = runner_path.read_text(encoding='utf-8')
+v2_path = Path('/opt/scanner/run-scan-v2.sh')
+v2_text = v2_path.read_text(encoding='utf-8')
 old = '''if enabled "$NUCLEI_REQUESTED"; then
   log "第三阶段：运行协议分流 Nuclei V2"
   /opt/scanner/run-nuclei-v2.sh "$OUT" "$MODE"
@@ -26,15 +26,128 @@ else
 JSON
 fi
 '''
-if old not in runner_text:
+if old not in v2_text:
     raise SystemExit('run-scan-v2.sh nuclei block not found')
-runner_text = runner_text.replace(old, new, 1)
+v2_text = v2_text.replace(old, new, 1)
 old2 = 'python3 /opt/scanner/render_report.py "$OUT"\n'
 new2 = old2 + 'python3 /opt/scanner/finalize_quality.py "$OUT"\n'
-if old2 not in runner_text:
+if old2 not in v2_text:
     raise SystemExit('render_report invocation not found')
-runner_text = runner_text.replace(old2, new2, 1)
-runner_path.write_text(runner_text, encoding='utf-8')
+v2_text = v2_text.replace(old2, new2, 1)
+v2_path.write_text(v2_text, encoding='utf-8')
+
+scan_path = Path('/opt/scanner/run-scan.sh')
+scan_text = scan_path.read_text(encoding='utf-8')
+old_targets = '''if [[ -s "$OUT/dnsx.jsonl" ]]; then
+  jq -r '.host // .input // empty' "$OUT/dnsx.jsonl" | sort -u >"$OUT/dnsx.hosts.txt" || true
+else
+  : >"$OUT/dnsx.hosts.txt"
+fi
+
+cat "$OUT/domains.all.txt" "$OUT/ips.txt" "$OUT/cidrs.txt" 2>/dev/null | \\
+  sed '/^[[:space:]]*$/d' | sort -u >"$OUT/portscan.targets.txt"
+'''
+new_targets = '''if [[ -s "$OUT/dnsx.jsonl" ]]; then
+  jq -r '.host // .input // empty' "$OUT/dnsx.jsonl" | sort -u >"$OUT/dnsx.hosts.txt" || true
+  python3 - "$OUT/dnsx.jsonl" "$OUT/dnsx.ips.txt" <<'PY'
+import ipaddress
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+values = set()
+for raw in source.read_text(encoding="utf-8", errors="ignore").splitlines():
+    try:
+        item = json.loads(raw)
+    except Exception:
+        continue
+    for key in ("a", "aaaa"):
+        current = item.get(key, [])
+        if isinstance(current, str):
+            current = [current]
+        if not isinstance(current, list):
+            continue
+        for value in current:
+            try:
+                values.add(str(ipaddress.ip_address(str(value).strip())))
+            except ValueError:
+                pass
+target.write_text("".join(value + "\\n" for value in sorted(values)), encoding="utf-8")
+PY
+else
+  : >"$OUT/dnsx.hosts.txt"
+  : >"$OUT/dnsx.ips.txt"
+fi
+
+# Naabu 对容器内部 DNS 别名和分流 DNS 的解析不一定与 DNSX 一致。
+# 保留域名用于正常公网扫描，同时复用 DNSX 已验证的 A/AAAA 地址，避免
+# “DNSX 已解析但 Naabu 报 no valid targets”的假失败。
+cat "$OUT/domains.all.txt" "$OUT/dnsx.ips.txt" "$OUT/ips.txt" "$OUT/cidrs.txt" 2>/dev/null | \\
+  sed '/^[[:space:]]*$/d' | sort -u >"$OUT/portscan.targets.txt"
+'''
+if old_targets not in scan_text:
+    raise SystemExit('run-scan.sh DNSX target block not found')
+scan_text = scan_text.replace(old_targets, new_targets, 1)
+
+old_naabu = '''naabu_stage() {
+  : >"$OUT/naabu.jsonl"
+  [[ -s "$OUT/portscan.targets.txt" ]] || return 0
+  local args=(
+    -list "$OUT/portscan.targets.txt"
+    -scan-type c
+    -Pn
+    -rate "${NAABU_RATE:-500}"
+    -retries 1
+    -timeout 3000
+    -silent
+    -json
+    -o "$OUT/naabu.jsonl"
+  )
+  if [[ -n "${CUSTOM_PORTS:-}" ]]; then
+    args+=(-p "$CUSTOM_PORTS")
+  else
+    args+=(-top-ports "$TOP_PORTS")
+  fi
+  if enabled "$NAABU_SERVICE_VERSION"; then
+    args+=(-sV -sV-fast -sV-workers 20)
+  fi
+  naabu "${args[@]}"
+}
+'''
+new_naabu = '''naabu_stage() {
+  : >"$OUT/naabu.jsonl"
+  : >"$OUT/naabu.log"
+  [[ -s "$OUT/portscan.targets.txt" ]] || return 0
+  local args=(
+    -list "$OUT/portscan.targets.txt"
+    -scan-type c
+    -Pn
+    -rate "${NAABU_RATE:-500}"
+    -retries 1
+    -timeout 3000
+    -silent
+    -json
+    -duc
+    -no-stdin
+    -o "$OUT/naabu.jsonl"
+  )
+  if [[ -n "${CUSTOM_PORTS:-}" ]]; then
+    args+=(-p "$CUSTOM_PORTS")
+  else
+    args+=(-top-ports "$TOP_PORTS")
+  fi
+  if enabled "$NAABU_SERVICE_VERSION"; then
+    args+=(-sV -sV-fast -sV-workers 20)
+  fi
+  naabu "${args[@]}" 2> >(tee "$OUT/naabu.log" >&2)
+}
+'''
+if old_naabu not in scan_text:
+    raise SystemExit('run-scan.sh Naabu block not found')
+scan_text = scan_text.replace(old_naabu, new_naabu, 1)
+scan_path.write_text(scan_text, encoding='utf-8')
 
 # Scanner API 的私有状态目录、日志目录和队列事务已经直接维护在源码中。
 # 构建阶段只做断言，不再依赖脆弱的字符串替换。
