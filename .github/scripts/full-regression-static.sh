@@ -22,12 +22,24 @@ python3 -m compileall -q scanner mcp enhanced-worker installer scripts
 log 'Compose 拓扑检查'
 export ARL_REPORT_ROOT="${RUNNER_TEMP:-/tmp}/arl-regression-reports"
 mkdir -p "$ARL_REPORT_ROOT/scanner"
-docker compose config >"${RUNNER_TEMP:-/tmp}/arl-compose-rendered.yml"
-grep -q '^  scanner-v2:' "${RUNNER_TEMP:-/tmp}/arl-compose-rendered.yml"
-grep -q 'target: /code/frontend/report' "${RUNNER_TEMP:-/tmp}/arl-compose-rendered.yml"
-grep -q 'target: /work/results' "${RUNNER_TEMP:-/tmp}/arl-compose-rendered.yml"
-! grep -q 'target: /code/frontend/report/scanner' "${RUNNER_TEMP:-/tmp}/arl-compose-rendered.yml"
+compose_rendered="${RUNNER_TEMP:-/tmp}/arl-compose-rendered.yml"
+docker compose config >"$compose_rendered"
+grep -q '^  scanner-v2:' "$compose_rendered"
+grep -q 'target: /code/frontend/report' "$compose_rendered"
+grep -q 'target: /work/results' "$compose_rendered"
+! grep -q 'target: /code/frontend/report/scanner' "$compose_rendered"
 ! grep -Fq '/code/frontend/report/scanner:ro' docker-compose.yml
+python3 - "$compose_rendered" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding='utf-8') as handle:
+    services = (yaml.safe_load(handle) or {}).get('services') or {}
+for name in ('mcp-local', 'mcp'):
+    depends = services[name]['depends_on']
+    assert depends['scanner-v2']['condition'] == 'service_healthy', (name, depends)
+    assert depends['web']['condition'] == 'service_started', (name, depends)
+PY
 
 log '固定发布版本检查'
 grep -Fq 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-scanner-v2-complete.1' installer/private-bootstrap.example.sh
