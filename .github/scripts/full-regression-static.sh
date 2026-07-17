@@ -14,6 +14,7 @@ for file in enhanced-worker/arl-report-index-wrapper enhanced-worker/afrog-arl; 
   [[ -f "$file" ]] && bash -n "$file"
 done
 bash -n install-arl-final.sh
+bash -n install-arl-complete.sh
 bash -n installer/private-bootstrap.example.sh
 
 log 'Python 语法检查'
@@ -42,9 +43,10 @@ for name in ('mcp-local', 'mcp'):
 PY
 
 log '固定发布版本检查'
-grep -Fq 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-scanner-v2-complete.1' installer/private-bootstrap.example.sh
-grep -Fq 'release/2026.07.09-scanner-v2-control-plane' installer/private-bootstrap.example.sh
-grep -Fq 'bc68248f782adeefa358dd23a5fde4eedd77ce73' installer/private-bootstrap.example.sh
+grep -Fq 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-final.1' installer/private-bootstrap.example.sh
+grep -Fq 'release/2026.07.17-final' installer/private-bootstrap.example.sh
+grep -Fq '7ac2c8e0aa4440672eccf163d7604c1864c2065a' installer/private-bootstrap.example.sh
+grep -Fq 'ARL_COMPLETE_INSTALLER_VERSION=2026.07.17-mcp-url-safe.2' install-arl-complete.sh
 grep -Fq 'https://127.0.0.1:5003/xray/index.html' installer/private-bootstrap.example.sh
 grep -Fq 'arl_submit_enhanced_scan' mcp/enhanced_tools.py
 grep -Fq 'legacy_native_restart' mcp/patch_server.py
