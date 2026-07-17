@@ -50,35 +50,107 @@ new_dnsx = '''dnsx_stage() {
   : >"$OUT/dnsx.ips.txt"
   [[ -s "$OUT/domains.all.txt" ]] || return 0
 
-  local rc=0
-  dnsx \
-    -l "$OUT/domains.all.txt" \
-    -silent -a -resp -json -omit-raw -duc \
-    -o "$OUT/dnsx.jsonl" || rc=$?
+  local json_rc=0
+  local response_rc=0
+  dnsx \\
+    -l "$OUT/domains.all.txt" \\
+    -silent -a -resp -json -omit-raw -duc \\
+    -o "$OUT/dnsx.jsonl" || json_rc=$?
 
-  # 直接使用 DNSX 官方 resp-only 输出，不依赖不同版本的 JSON 包装结构。
-  dnsx \
-    -l "$OUT/domains.all.txt" \
-    -silent -a -resp-only -duc \
-    -o "$OUT/dnsx.ips.txt" || rc=$?
+  # 公网域名优先使用 DNSX 官方纯 IP 输出。
+  dnsx \\
+    -l "$OUT/domains.all.txt" \\
+    -silent -a -resp-only -duc \\
+    -o "$OUT/dnsx.ips.txt" || response_rc=$?
 
-  if [[ -s "$OUT/dnsx.ips.txt" ]]; then
-    python3 - "$OUT/dnsx.ips.txt" <<'PY'
+  # Docker 内部域名、VPN 分流域名和企业私有 DNS 可能只能通过系统解析器
+  # 解析。并行调用 getaddrinfo，并从 DNSX JSON 中递归提取所有 IP，最后
+  # 统一去重，避免 DNSX 已有结果却被 Naabu 判定为无有效目标。
+  python3 - "$OUT/domains.all.txt" "$OUT/dnsx.jsonl" "$OUT/dnsx.ips.txt" <<'PY'
+import concurrent.futures
 import ipaddress
+import json
+import socket
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
+domains_path = Path(sys.argv[1])
+json_path = Path(sys.argv[2])
+ips_path = Path(sys.argv[3])
 values = set()
-for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+
+
+def add_ip(value):
+    if not isinstance(value, str):
+        return
+    candidate = value.strip().strip('[]')
     try:
-        values.add(str(ipaddress.ip_address(raw.strip())))
+        values.add(str(ipaddress.ip_address(candidate)))
     except ValueError:
         pass
-path.write_text("".join(value + "\\n" for value in sorted(values)), encoding="utf-8")
+
+
+def walk(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            walk(item)
+    elif isinstance(value, list):
+        for item in value:
+            walk(item)
+    else:
+        add_ip(value)
+
+if ips_path.is_file():
+    for raw in ips_path.read_text(encoding='utf-8', errors='ignore').splitlines():
+        add_ip(raw)
+
+if json_path.is_file():
+    for raw in json_path.read_text(encoding='utf-8', errors='ignore').splitlines():
+        try:
+            walk(json.loads(raw))
+        except (TypeError, ValueError):
+            continue
+
+hosts = []
+if domains_path.is_file():
+    hosts = [
+        raw.strip().rstrip('.')
+        for raw in domains_path.read_text(encoding='utf-8', errors='ignore').splitlines()
+        if raw.strip()
+    ]
+
+
+def resolve(host):
+    output = set()
+    try:
+        for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
+            add = item[4][0]
+            try:
+                output.add(str(ipaddress.ip_address(add)))
+            except ValueError:
+                pass
+    except OSError:
+        pass
+    return output
+
+if hosts:
+    workers = min(32, max(1, len(hosts)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        for resolved in pool.map(resolve, hosts):
+            values.update(resolved)
+
+ips_path.write_text(
+    ''.join(value + '\\n' for value in sorted(values)),
+    encoding='utf-8',
+)
 PY
+
+  if [[ -s "$OUT/dnsx.jsonl" || -s "$OUT/dnsx.ips.txt" ]]; then
+    return 0
   fi
-  return "$rc"
+  (( json_rc != 0 )) && return "$json_rc"
+  (( response_rc != 0 )) && return "$response_rc"
+  return 0
 }
 '''
 if old_dnsx not in scan_text:
@@ -100,9 +172,7 @@ else
   : >"$OUT/dnsx.hosts.txt"
 fi
 
-# Naabu 对容器内部 DNS 别名和分流 DNS 的解析不一定与 DNSX 一致。
-# 保留域名用于正常公网扫描，同时复用 DNSX 已验证的 A 地址，避免
-# “DNSX 已解析但 Naabu 报 no valid targets”的假失败。
+# 保留原域名，同时复用 DNSX 和系统解析器已经验证的 IP。
 cat "$OUT/domains.all.txt" "$OUT/dnsx.ips.txt" "$OUT/ips.txt" "$OUT/cidrs.txt" 2>/dev/null | \\
   sed '/^[[:space:]]*$/d' | sort -u >"$OUT/portscan.targets.txt"
 '''
