@@ -36,20 +36,42 @@ jobs:
           docker system prune -af || true
           df -h
       - name: Run Scanner V2 and MCP end-to-end
-        run: bash .github/scripts/full-regression.sh runtime
-      - name: Show Scanner/MCP diagnostics on failure
+        run: bash .github/scripts/full-regression-ci.sh runtime
+      - name: Collect Scanner/MCP diagnostics
         if: failure()
         run: |
-          echo '=== docker ps ==='
-          docker ps -a || true
-          for c in arl-e2e-scanner arl-e2e-mcp arl-e2e-mcp-auth arl-e2e-fixture; do
-            echo "=== $c logs ==="
-            docker logs --tail=250 "$c" 2>&1 || true
-          done
-          echo '=== result files ==='
-          find /tmp -path '*/results/*' -maxdepth 8 -type f -printf '%p %s bytes\n' 2>/dev/null | tail -n 300 || true
-          echo '=== disk ==='
-          df -h || true
+          mkdir -p diagnostics
+          {
+            echo '=== docker ps ==='
+            docker ps -a || true
+            for c in arl-e2e-scanner arl-e2e-mcp arl-e2e-mcp-auth arl-e2e-fixture; do
+              echo "=== $c inspect ==="
+              docker inspect "$c" 2>&1 || true
+              echo "=== $c logs ==="
+              docker logs --tail=500 "$c" 2>&1 || true
+            done
+            echo '=== result files ==='
+            find /tmp -path '*/results/*' -maxdepth 9 -type f -printf '%M %u:%g %p %s bytes\n' 2>/dev/null | sort || true
+            echo '=== selected result content ==='
+            find /tmp -path '*/results/*' -type f \
+              \( -name 'quality-status.json' -o -name 'nuclei-status.json' -o -name 'summary.json' -o -name 'errors.log' -o -name 'scanner-api.log' \) \
+              -exec sh -c 'echo "--- $1"; tail -n 300 "$1"' _ {} \; 2>/dev/null || true
+            echo '=== disk ==='
+            df -h || true
+          } >diagnostics/scanner-mcp.txt 2>&1
+          tail -n 400 diagnostics/scanner-mcp.txt
+      - name: Upload Scanner/MCP diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-mcp-diagnostics
+          path: diagnostics/scanner-mcp.txt
+          if-no-files-found: error
+      - name: Cleanup Scanner/MCP runtime
+        if: always()
+        run: |
+          docker rm -f arl-e2e-mcp-auth arl-e2e-mcp arl-e2e-scanner arl-e2e-fixture >/dev/null 2>&1 || true
+          docker network rm arl-e2e >/dev/null 2>&1 || true
 
   compose-runtime:
     runs-on: ubuntu-latest
@@ -62,17 +84,45 @@ jobs:
           docker system prune -af || true
           df -h
       - name: Run real Compose topology
-        run: bash .github/scripts/full-regression.sh compose
-      - name: Show Compose diagnostics on failure
+        run: bash .github/scripts/full-regression-ci.sh compose
+      - name: Collect Compose diagnostics
         if: failure()
         run: |
-          echo '=== docker ps ==='
-          docker ps -a || true
-          echo '=== compose logs ==='
-          docker compose logs --tail=300 --no-color || true
-          echo '=== rendered mounts ==='
-          docker compose config | sed -n '/services:/,$p' | grep -n -A5 -B5 '/code/frontend/report\|/work/results\|scanner-v2' || true
-          echo '=== report tree ==='
-          find "${ARL_REPORT_ROOT:-/var/lib/arl-reports}" -maxdepth 4 -printf '%M %u:%g %p %s bytes\n' 2>/dev/null | tail -n 300 || true
-          echo '=== disk ==='
-          df -h || true
+          mkdir -p diagnostics
+          {
+            echo '=== docker ps ==='
+            docker ps -a || true
+            echo '=== compose logs ==='
+            docker compose logs --tail=500 --no-color || true
+            echo '=== container inspect ==='
+            for c in arl_web arl_scanner_v2 arl_mcp_local arl_mongodb arl_rabbitmq; do
+              echo "--- $c"
+              docker inspect "$c" 2>&1 || true
+            done
+            echo '=== rendered mounts and dependencies ==='
+            docker compose config | sed -n '/services:/,$p' | grep -n -A12 -B12 '/code/frontend/report\|/work/results\|scanner-v2\|mcp-local' || true
+            echo '=== report trees ==='
+            find /tmp -path '*/reports*' -maxdepth 8 -printf '%M %u:%g %p %s bytes\n' 2>/dev/null | sort || true
+            echo '=== HTTP probes ==='
+            for path in / /report/ /report/index.html /xray/index.html /report/scanner/index.html; do
+              code="$(curl -k -sS -o /tmp/compose-probe-body -w '%{http_code}' --connect-timeout 3 --max-time 10 "https://127.0.0.1:5003$path" || true)"
+              echo "$path -> $code"
+              head -c 400 /tmp/compose-probe-body 2>/dev/null || true
+              echo
+            done
+            echo '=== disk ==='
+            df -h || true
+          } >diagnostics/compose.txt 2>&1
+          tail -n 400 diagnostics/compose.txt
+      - name: Upload Compose diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-diagnostics
+          path: diagnostics/compose.txt
+          if-no-files-found: error
+      - name: Cleanup Compose runtime
+        if: always()
+        run: |
+          docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+          docker volume rm arl_db >/dev/null 2>&1 || true
