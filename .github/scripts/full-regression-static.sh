@@ -45,7 +45,7 @@ PY
 
 log '固定发布版本检查'
 grep -Fq 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-final.2' installer/private-bootstrap.example.sh
-grep -Fq 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.1' installer/private-bootstrap-complete.sh
+grep -Fq 'ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.2' installer/private-bootstrap-complete.sh
 grep -Fq 'release/2026.07.17-final' installer/private-bootstrap.example.sh
 grep -Fq 'release/2026.07.17-final' installer/private-bootstrap-complete.sh
 grep -Fq 'ARL_COMPLETE_INSTALLER_VERSION=2026.07.17-mcp-url-safe.2' install-arl-complete.sh
