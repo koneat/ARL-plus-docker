@@ -33,8 +33,7 @@ docker() {
 export -f docker
 
 # 原回归脚本退出时会立即删除容器，导致 Actions 的失败诊断看不到现场。
-# CI 副本移除 EXIT 清理 trap，并修正两个仅影响测试编排的问题：
-# 1. heredoc 必须通过 docker exec -i 传入；2. MCP 检查前等待 Scanner 健康。
+# CI 副本移除 EXIT 清理 trap，并修正仅影响测试编排的问题。
 python3 - .github/scripts/full-regression.sh "$runner" <<'PY'
 from pathlib import Path
 import sys
@@ -43,6 +42,16 @@ source = Path(sys.argv[1]).read_text(encoding='utf-8')
 source = source.replace(
     "docker exec arl-e2e-mcp-auth python - <<'PY'",
     "docker exec -i arl-e2e-mcp-auth python - <<'PY'",
+    1,
+)
+source = source.replace(
+    "docker run -d --name arl-e2e-scanner --network arl-e2e \\",
+    "docker run -d --name arl-e2e-scanner --network arl-e2e --cap-drop ALL --security-opt no-new-privileges:true \\",
+    1,
+)
+source = source.replace(
+    "    -e ENABLE_NAABU=false \\",
+    "    -e ENABLE_NAABU=true \\\n    -e CUSTOM_PORTS=8080 \\\n    -e NAABU_SERVICE_VERSION_OVERRIDE=false \\",
     1,
 )
 old = """  docker compose exec -T web test -r /code/frontend/report/xray/index.html
