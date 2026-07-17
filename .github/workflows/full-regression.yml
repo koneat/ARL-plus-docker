@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run static and installer checks
-        run: bash .github/scripts/full-regression.sh static
+        run: bash .github/scripts/full-regression-static.sh
 
   scanner-mcp-runtime:
     runs-on: ubuntu-latest
