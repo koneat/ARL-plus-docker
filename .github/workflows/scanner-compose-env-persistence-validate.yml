@@ -1,0 +1,60 @@
+name: scanner-compose-env-persistence-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'installer/lib/90-main.sh'
+      - 'scripts/persist-scanner-compose-env.py'
+      - 'scripts/compose-env.py'
+      - '.github/workflows/scanner-compose-env-persistence-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  persist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Persist allowlisted Scanner settings
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          env_file="$tmp/.env"
+          printf 'ARL_API_KEY=test\n' >"$env_file"
+
+          ARL_SCANNER_V2_IMAGE='registry.example/scanner:test' \
+          SCANNER_V2_WORKERS='3' \
+          SCANNER_V2_MAX_QUEUE='17' \
+          ENABLE_KATANA='false' \
+          NUCLEI_TEMPLATE_UPDATE_TIMEOUT='90' \
+            python3 scripts/persist-scanner-compose-env.py \
+              "$env_file" scripts/compose-env.py
+
+          test "$(python3 scripts/compose-env.py "$env_file" get ARL_SCANNER_V2_IMAGE)" = \
+            'registry.example/scanner:test'
+          test "$(python3 scripts/compose-env.py "$env_file" get SCANNER_V2_WORKERS)" = '3'
+          test "$(python3 scripts/compose-env.py "$env_file" get SCANNER_V2_MAX_QUEUE)" = '17'
+          test "$(python3 scripts/compose-env.py "$env_file" get ENABLE_KATANA)" = 'false'
+          test "$(python3 scripts/compose-env.py "$env_file" get NUCLEI_TEMPLATE_UPDATE_TIMEOUT)" = '90'
+
+          # 未重新提供变量时，助手不会删除已经持久化的配置。
+          env -u ARL_SCANNER_V2_IMAGE -u SCANNER_V2_WORKERS -u ENABLE_KATANA \
+            python3 scripts/persist-scanner-compose-env.py "$env_file" scripts/compose-env.py
+          test "$(python3 scripts/compose-env.py "$env_file" get SCANNER_V2_WORKERS)" = '3'
+          test "$(python3 scripts/compose-env.py "$env_file" get ENABLE_KATANA)" = 'false'
+
+      - name: Verify installer integration order
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('installer/lib/90-main.sh').read_text(encoding='utf-8')
+          prepare = text.index('  prepare_compose_env\n')
+          persist = text.index('persist-scanner-compose-env.py')
+          reports = text.index('  prepare_reports\n')
+          assert prepare < persist < reports
+          assert 'get ARL_SCANNER_V2_IMAGE' in text
+          PY
