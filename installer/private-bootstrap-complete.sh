@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.2
+# ARL_PRIVATE_BOOTSTRAP_VERSION=2026.07.17-complete.3
 set -Eeuo pipefail
 umask 077
 
@@ -123,7 +123,7 @@ if [[ -n "$REVIEWED_COMMIT" && "$actual_commit" != "$REVIEWED_COMMIT" ]]; then
   die "发布分支提交不匹配：期望 $REVIEWED_COMMIT，实际 $actual_commit"
 fi
 
-grep -q '^# ARL_COMPLETE_INSTALLER_VERSION=2026.07.17-mcp-url-safe.2$' \
+grep -q '^# ARL_COMPLETE_INSTALLER_VERSION=2026.07.17-mcp-url-safe.3$' \
   "$TMP_DIR/repo/install-arl-complete.sh" || die '完整安装器版本不匹配'
 bash -n "$TMP_DIR/repo/install-arl-final.sh"
 bash -n "$TMP_DIR/repo/install-arl-complete.sh"
@@ -158,7 +158,7 @@ for url in \
   [[ "$code" == 200 ]] || die "${url} HTTP 状态异常：${code}"
 done
 
-docker exec arl_mcp_local python - <<'PY' >/dev/null
+docker exec -i arl_mcp_local python - <<'PY' >/dev/null
 import json
 import urllib.request
 with urllib.request.urlopen('http://scanner-v2:8090/capabilities', timeout=10) as response:
