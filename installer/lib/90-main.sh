@@ -50,7 +50,23 @@ main() {
   prepare_vendored_wordlists
   prepare_config
   prepare_compose_file
+
+  # 重复安装时，如果调用方没有再次填写自定义 Scanner 镜像，则从现有
+  # Compose .env 中恢复，避免 prepare_compose_env 覆盖后退回默认镜像。
+  if [[ -z "${ARL_SCANNER_V2_IMAGE:-}" && -f "${ARL_DIR}/.env" ]]; then
+    ARL_SCANNER_V2_IMAGE="$(
+      python3 "${ARL_DIR}/scripts/compose-env.py" "${ARL_DIR}/.env" \
+        get ARL_SCANNER_V2_IMAGE 2>/dev/null || true
+    )"
+    if [[ -n "$ARL_SCANNER_V2_IMAGE" ]]; then
+      export ARL_SCANNER_V2_IMAGE
+      ok "复用现有 Scanner V2 镜像选择：${ARL_SCANNER_V2_IMAGE}"
+    fi
+  fi
+
   prepare_compose_env
+  python3 "${ARL_DIR}/scripts/persist-scanner-compose-env.py" \
+    "${ARL_DIR}/.env" "${ARL_DIR}/scripts/compose-env.py"
   prepare_reports
   validate_compose
   deploy_services
