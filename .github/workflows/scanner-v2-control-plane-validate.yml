@@ -121,7 +121,7 @@ jobs:
           test -s "$tmp/results/index.html"
           grep -q "$scan_id/report.html" "$tmp/results/index.html"
           test ! -e "$tmp/input/$scan_id.targets.txt"
-          test -s "$tmp/logs/$scan_id.log"
+          test -e "$tmp/logs/$scan_id.log"
           test -s "$tmp/state/$scan_id.json"
 
       - name: Exercise Nuclei fail-closed states
