@@ -36,32 +36,17 @@ if old2 not in runner_text:
 runner_text = runner_text.replace(old2, new2, 1)
 runner_path.write_text(runner_text, encoding='utf-8')
 
+# Scanner API 的私有状态目录、日志目录和队列事务已经直接维护在源码中。
+# 构建阶段只做断言，不再依赖脆弱的字符串替换。
 api_path = Path('/opt/scanner/scanner_api.py')
 api_text = api_path.read_text(encoding='utf-8')
-api_text = api_text.replace(
-    'STATE_ROOT = RESULT_ROOT / ".scanner-api"\n',
-    'STATE_ROOT = Path(os.getenv("SCANNER_V2_STATE_ROOT", "/root/.config/scanner-api"))\n'
-    'LOG_ROOT = Path(os.getenv("SCANNER_V2_LOG_ROOT", str(STATE_ROOT / "logs")))\n',
-    1,
+required = (
+    'SCANNER_V2_STATE_ROOT',
+    'SCANNER_V2_LOG_ROOT',
+    '_submit_lock',
+    'def submit_scan(',
+    'cleanup_target_file',
 )
-api_text = api_text.replace(
-    '        "log": f"{base}/scanner-api.log",\n',
-    '',
-    1,
-)
-api_text = api_text.replace(
-    '    log_path = out / "scanner-api.log"\n',
-    '    LOG_ROOT.mkdir(parents=True, exist_ok=True)\n'
-    '    log_path = LOG_ROOT / f"{scan_id}.log"\n',
-    1,
-)
-api_text = api_text.replace(
-    '    STATE_ROOT.mkdir(parents=True, exist_ok=True)\n    INPUT_ROOT.mkdir(parents=True, exist_ok=True)\n',
-    '    STATE_ROOT.mkdir(parents=True, exist_ok=True)\n'
-    '    LOG_ROOT.mkdir(parents=True, exist_ok=True)\n'
-    '    INPUT_ROOT.mkdir(parents=True, exist_ok=True)\n',
-    1,
-)
-if 'SCANNER_V2_STATE_ROOT' not in api_text or 'LOG_ROOT / f"{scan_id}.log"' not in api_text:
-    raise SystemExit('scanner_api.py private state patch failed')
-api_path.write_text(api_text, encoding='utf-8')
+missing = [item for item in required if item not in api_text]
+if missing:
+    raise SystemExit('scanner_api.py missing integrated controls: {}'.format(', '.join(missing)))
