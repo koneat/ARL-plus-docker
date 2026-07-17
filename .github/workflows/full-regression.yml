@@ -66,6 +66,13 @@ jobs:
         env:
           REGRESSION_IMAGES_PREBUILT: 'true'
         run: bash .github/scripts/full-regression-ci.sh runtime
+      - name: Verify restricted Naabu connect scan
+        run: |
+          set -Eeuo pipefail
+          docker exec arl-e2e-scanner sh -lc \
+            "grep -Eq '(^|:|\\])8080$' /work/results/latest/open-services.txt"
+      - name: Submit and query enhanced scan through MCP
+        run: docker exec -i arl-e2e-mcp python - <.github/scripts/mcp-enhanced-e2e.py
       - name: Collect Scanner/MCP diagnostics
         if: failure()
         run: |
