@@ -1,0 +1,25 @@
+name: enhanced-worker-self-check-validate
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/update-enhanced-worker.sh'
+      - 'enhanced-worker/quality_hardening.py'
+      - '.github/workflows/enhanced-worker-self-check-validate.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate worker self-check contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/update-enhanced-worker.sh
+          python3 -m py_compile enhanced-worker/quality_hardening.py
+          grep -q 'grep -qx "api/auth/login" /opt/arl-wordlists/api-endpoints.txt' scripts/update-enhanced-worker.sh
+          ! grep -q 'api/auth/login.*file_top_2000.txt' scripts/update-enhanced-worker.sh
+          grep -q 'grep -qx ".env" /code/app/dicts/file_top_2000.txt' scripts/update-enhanced-worker.sh
+          grep -q 'grep -qx "swagger.json" /code/app/dicts/file_top_2000.txt' scripts/update-enhanced-worker.sh
+          grep -q '\[SELF-CHECK\]\[FAIL\]' scripts/update-enhanced-worker.sh
