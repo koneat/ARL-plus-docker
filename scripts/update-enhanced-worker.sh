@@ -149,6 +149,12 @@ ARL_MERGE_FULL_DOMAIN_WORDLIST="$MERGE_FULL_DOMAIN" \
 log "执行镜像离线自检"
 docker run --rm --entrypoint sh "$ENHANCED_IMAGE" -c '
   set -e
+  check() {
+    "$@" || {
+      echo "[SELF-CHECK][FAIL] $*" >&2
+      exit 1
+    }
+  }
   python3.6 -m py_compile \
     /code/app/services/massdns.py \
     /code/app/services/wildcardSmart.py \
@@ -157,27 +163,26 @@ docker run --rm --entrypoint sh "$ENHANCED_IMAGE" -c '
     /code/app/services/commonTask.py \
     /code/app/tasks/domain.py
   python3.6 -c "import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan; from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch; print(\"enhanced-worker-import-ok\")"
-  command -v nuclei
-  command -v afrog
-  command -v rad
-  command -v afrog-arl
-  test -e /usr/lib64/libpcap.so.0.8
-  test -s /opt/arl-wordlists/api-endpoints.txt
-  test -s /opt/arl-wordlists/raft-small-files.txt
-  test -s /opt/arl-wordlists/subdomains-main.txt
-  grep -qx "api/auth/login" /opt/arl-wordlists/api-endpoints.txt
-  grep -qx "index.php" /opt/arl-wordlists/raft-small-files.txt
-  grep -qx "admin" /opt/arl-wordlists/subdomains-main.txt
-  grep -qx ".env" /code/app/dicts/file_top_2000.txt
-  grep -qx "swagger.json" /code/app/dicts/file_top_2000.txt
-  grep -qx "api/auth/login" /code/app/dicts/file_top_2000.txt
-  grep -qx "admin" /code/app/dicts/domain_2w.txt
-  grep -q "ARL_NUCLEI_TAGS" /code/app/services/nuclei_scan.py
-  grep -q "executed_zero_findings" /code/app/services/afrog_scan.py
-  grep -q "def afrog_scan(self):" /code/app/services/commonTask.py
-  grep -q "self.run_func(\"afrog_scan\", self.afrog_scan)" /code/app/services/commonTask.py
-  grep -q "update_services" /code/app/services/commonTask.py
-  grep -q "WildcardSmartFilter" /code/app/tasks/domain.py
+  check command -v nuclei
+  check command -v afrog
+  check command -v rad
+  check command -v afrog-arl
+  check test -e /usr/lib64/libpcap.so.0.8
+  check test -s /opt/arl-wordlists/api-endpoints.txt
+  check test -s /opt/arl-wordlists/raft-small-files.txt
+  check test -s /opt/arl-wordlists/subdomains-main.txt
+  check grep -qx "api/auth/login" /opt/arl-wordlists/api-endpoints.txt
+  check grep -qx "index.php" /opt/arl-wordlists/raft-small-files.txt
+  check grep -qx "admin" /opt/arl-wordlists/subdomains-main.txt
+  check grep -qx ".env" /code/app/dicts/file_top_2000.txt
+  check grep -qx "swagger.json" /code/app/dicts/file_top_2000.txt
+  check grep -qx "admin" /code/app/dicts/domain_2w.txt
+  check grep -q "ARL_NUCLEI_TAGS" /code/app/services/nuclei_scan.py
+  check grep -q "executed_zero_findings" /code/app/services/afrog_scan.py
+  check grep -q "def afrog_scan(self):" /code/app/services/commonTask.py
+  check grep -q "self.run_func(\"afrog_scan\", self.afrog_scan)" /code/app/services/commonTask.py
+  check grep -q "update_services" /code/app/services/commonTask.py
+  check grep -q "WildcardSmartFilter" /code/app/tasks/domain.py
   ! grep -q "if ip in self.not_found_domain_ips" /code/app/tasks/domain.py
 '
 
@@ -199,7 +204,7 @@ for _ in $(seq 1 40); do
      docker exec "$WORKER_CONTAINER" sh -c \
        "python3.6 -c 'import socks; from app.services.wildcardSmart import WildcardSmartFilter; from app.services.nuclei_scan import NucleiScan; from app.services.afrog_scan import AfrogTaskScan; from app.services.commonTask import WebSiteFetch; import app.tasks.domain'" >/dev/null 2>&1 && \
      docker exec "$WORKER_CONTAINER" sh -c \
-       "command -v nuclei && command -v afrog && command -v rad && test -e /usr/lib64/libpcap.so.0.8 && test -s /opt/arl-wordlists/subdomains-main.txt && grep -qx 'api/auth/login' /code/app/dicts/file_top_2000.txt && grep -q 'def afrog_scan(self):' /code/app/services/commonTask.py" >/dev/null 2>&1 && \
+       "command -v nuclei && command -v afrog && command -v rad && test -e /usr/lib64/libpcap.so.0.8 && test -s /opt/arl-wordlists/subdomains-main.txt && grep -qx '.env' /code/app/dicts/file_top_2000.txt && grep -qx 'swagger.json' /code/app/dicts/file_top_2000.txt && grep -q 'def afrog_scan(self):' /code/app/services/commonTask.py" >/dev/null 2>&1 && \
      docker exec "$WORKER_CONTAINER" sh -c \
        "ps -ef | grep -v grep | grep -q 'celery -A app.celerytask.celery worker'"; then
     healthy=true
