@@ -1,0 +1,52 @@
+name: xray-cors-baseline-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'installer/lib/61-chaitin-xray.sh'
+      - '.github/workflows/xray-cors-baseline-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Xray CORS suppression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n installer/lib/61-chaitin-xray.sh
+          grep -Fq 'disable_chaitin_xray_cors_baseline' installer/lib/61-chaitin-xray.sh
+          grep -Fq 'detect_cors_header_config' installer/lib/61-chaitin-xray.sh
+
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/xray"
+          cat >"$tmp/xray/config.yaml" <<'YAML'
+          version: 4.0
+          plugins:
+            baseline:
+              enabled: true
+              detect_cors_header_config: true
+              detect_server_error_page: true
+          YAML
+
+          source installer/lib/61-chaitin-xray.sh
+          chown() { :; }
+          ok() { :; }
+          die() { echo "$*" >&2; return 1; }
+          CHAITIN_XRAY_DIR="$tmp/xray"
+
+          disable_chaitin_xray_cors_baseline
+          grep -Eq '^[[:space:]]*detect_cors_header_config:[[:space:]]*false([[:space:]]|$)' "$tmp/xray/config.yaml"
+          grep -Fq 'detect_server_error_page: true' "$tmp/xray/config.yaml"
+          test -s "$tmp/xray/config.yaml.pre-arl-cors-disable.bak"
+
+          first_sha="$(sha256sum "$tmp/xray/config.yaml" | awk '{print $1}')"
+          disable_chaitin_xray_cors_baseline
+          second_sha="$(sha256sum "$tmp/xray/config.yaml" | awk '{print $1}')"
+          test "$first_sha" = "$second_sha"

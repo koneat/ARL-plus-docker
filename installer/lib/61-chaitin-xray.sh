@@ -4,6 +4,7 @@ prepare_chaitin_xray_config() {
     "${CHAITIN_XRAY_DIR}/xray.yaml"
     "${CHAITIN_XRAY_DIR}/module.xray.yaml"
     "${CHAITIN_XRAY_DIR}/plugin.xray.yaml"
+    "${CHAITIN_XRAY_DIR}/config.yaml"
   )
   local missing='false'
 
@@ -39,6 +40,102 @@ prepare_chaitin_xray_config() {
   chown arl-xray:arl-xray "${required_configs[@]}"
   chmod 0640 "${required_configs[@]}"
   ok '长亭 xray 默认配置已准备完成'
+}
+
+disable_chaitin_xray_cors_baseline() {
+  local config="${CHAITIN_XRAY_DIR}/config.yaml"
+
+  [[ -s "$config" ]] || die "长亭 xray 漏洞扫描配置不存在：$config"
+
+  python3 - "$config" <<'PY'
+from pathlib import Path
+import re
+import shutil
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding='utf-8')
+lines = text.splitlines()
+trailing_newline = text.endswith('\n')
+
+
+def indentation(line):
+    return len(line) - len(line.lstrip(' '))
+
+
+plugins_index = next(
+    (index for index, line in enumerate(lines) if re.match(r'^plugins:\s*(?:#.*)?$', line)),
+    None,
+)
+if plugins_index is None:
+    raise SystemExit('config.yaml 中未找到 plugins 配置段')
+
+baseline_index = None
+for index in range(plugins_index + 1, len(lines)):
+    line = lines[index]
+    if line.strip() and not line.lstrip().startswith('#') and indentation(line) == 0:
+        break
+    if re.match(r'^\s+baseline:\s*(?:#.*)?$', line):
+        baseline_index = index
+        break
+if baseline_index is None:
+    raise SystemExit('config.yaml 中未找到 plugins.baseline 配置段')
+
+baseline_indent = indentation(lines[baseline_index])
+baseline_end = len(lines)
+for index in range(baseline_index + 1, len(lines)):
+    line = lines[index]
+    if line.strip() and not line.lstrip().startswith('#') and indentation(line) <= baseline_indent:
+        baseline_end = index
+        break
+
+key_pattern = re.compile(
+    r'^(\s*detect_cors_header_config:\s*)(true|false)(\s*(?:#.*)?)$'
+)
+key_index = None
+changed = False
+for index in range(baseline_index + 1, baseline_end):
+    match = key_pattern.match(lines[index])
+    if not match:
+        continue
+    key_index = index
+    replacement = f'{match.group(1)}false{match.group(3)}'
+    if replacement != lines[index]:
+        lines[index] = replacement
+        changed = True
+    break
+
+if key_index is None:
+    insert_at = baseline_index + 1
+    for index in range(baseline_index + 1, baseline_end):
+        if re.match(r'^\s*enabled:\s*(?:true|false)\b', lines[index]):
+            insert_at = index + 1
+            break
+    lines.insert(
+        insert_at,
+        ' ' * (baseline_indent + 2)
+        + 'detect_cors_header_config: false  # ARL: 禁用 baseline CORS 噪声规则',
+    )
+    changed = True
+
+result = '\n'.join(lines) + ('\n' if trailing_newline else '')
+if changed:
+    backup = path.with_name(path.name + '.pre-arl-cors-disable.bak')
+    if not backup.exists():
+        shutil.copy2(path, backup)
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(result, encoding='utf-8')
+    temporary.chmod(path.stat().st_mode)
+    temporary.replace(path)
+
+updated = path.read_text(encoding='utf-8')
+if not re.search(r'^\s*detect_cors_header_config:\s*false\b', updated, re.MULTILINE):
+    raise SystemExit('未能关闭 plugins.baseline.detect_cors_header_config')
+PY
+
+  chown arl-xray:arl-xray "$config"
+  chmod 0640 "$config"
+  ok '已关闭长亭 xray baseline CORS 检查（包含 any-origin-with-credential）'
 }
 
 install_chaitin_xray() {
@@ -92,6 +189,7 @@ install_chaitin_xray() {
   find "$REPORT_ROOT/xray" -type f -name '*.html' -exec chmod 0644 {} + 2>/dev/null || true
 
   prepare_chaitin_xray_config
+  disable_chaitin_xray_cors_baseline
 
   cat > /usr/local/sbin/arl-xray-rotate-report.sh <<EOF
 #!/usr/bin/env bash
@@ -155,6 +253,7 @@ ExecStartPre=/usr/bin/test -w ${REPORT_ROOT}/xray
 ExecStartPre=/usr/bin/test -s ${CHAITIN_XRAY_DIR}/xray.yaml
 ExecStartPre=/usr/bin/test -s ${CHAITIN_XRAY_DIR}/module.xray.yaml
 ExecStartPre=/usr/bin/test -s ${CHAITIN_XRAY_DIR}/plugin.xray.yaml
+ExecStartPre=/usr/bin/test -s ${CHAITIN_XRAY_DIR}/config.yaml
 ExecStartPre=/usr/local/sbin/arl-xray-rotate-report.sh
 ExecStart=${CHAITIN_XRAY_DIR}/xray webscan --listen ${DOCKER_GATEWAY}:${CHAITIN_XRAY_PORT} --html-output ${REPORT_ROOT}/xray/proxy.html
 Restart=on-failure
