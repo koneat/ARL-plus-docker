@@ -33,6 +33,14 @@ def count_lines(path: Path) -> int:
         return 0
 
 
+def read_json(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
 def read_kv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     try:
@@ -59,8 +67,10 @@ def read_errors(path: Path) -> list[dict[str, object]]:
             rc = int(value)
         except ValueError:
             rc = -1
-        output.append({"name": name.strip(), "rc": rc})
+        if name.strip().startswith("Nuclei"):
+            output.append({"name": name.strip(), "rc": rc})
     return output
+
 
 status = read_kv(out / "nuclei-template-status.txt")
 template_count = int(status.get("template_count", "0") or 0)
@@ -68,54 +78,56 @@ minimum_expected = int(status.get("minimum_expected", "0") or 0)
 templates_required_missing = minimum_expected > 0 and template_count < minimum_expected
 
 passes = {
-    "official": (out / "scan-urls.txt", out / "nuclei.official.jsonl", "Nuclei 官方模板全量扫描"),
-    "custom": (out / "scan-urls.txt", out / "nuclei.custom.jsonl", "Nuclei 自定义模板扫描"),
-    "automatic": (out / "urls-priority.txt", out / "nuclei.automatic.jsonl", "Nuclei 技术栈自动策略"),
-    "exposure": (out / "origins.txt", out / "nuclei.exposure.jsonl", "Nuclei 配置、备份、日志和文件泄露专项"),
-    "api": (out / "urls-api.txt", out / "nuclei.api.jsonl", "Nuclei API、GraphQL、Webhook 和文档专项"),
-    "network": (out / "open-services.txt", out / "nuclei.network.jsonl", "Nuclei 网络服务与 TLS 专项"),
-    "dns": (out / "domains.all.txt", out / "nuclei.dns.jsonl", "Nuclei DNS 与接管风险专项"),
+    "official": "nuclei.official.jsonl",
+    "custom": "nuclei.custom.jsonl",
+    "automatic": "nuclei.automatic.jsonl",
+    "exposure": "nuclei.exposure.jsonl",
+    "api": "nuclei.api.jsonl",
+    "network": "nuclei.network.jsonl",
+    "dns": "nuclei.dns.jsonl",
 }
-nuclei_stage_names = {display_name for _, _, display_name in passes.values()}
-errors = [
-    item for item in read_errors(out / "errors.log")
-    if str(item.get("name", "")) in nuclei_stage_names
-]
-error_names = {str(item.get("name", "")) for item in errors}
 
 pass_status: dict[str, dict[str, object]] = {}
-for name, (targets, output, display_name) in passes.items():
-    target_count = count_lines(targets)
-    findings_count = count_lines(output)
-    if templates_required_missing and name != "custom":
-        state = "failed_templates_missing"
-    elif display_name in error_names:
-        state = "failed_command"
-    elif target_count == 0:
-        state = "skipped_no_targets"
-    elif findings_count > 0:
-        state = "completed_findings"
-    else:
-        state = "completed_zero_findings"
+for name, output_name in passes.items():
+    meta = read_json(out / f"nuclei.{name}.meta.json")
+    findings_count = count_lines(out / output_name)
+    selected_count = int(meta.get("selected_template_count", count_lines(out / f"nuclei.{name}.templates.txt")) or 0)
+    target_count = int(meta.get("target_count", 0) or 0)
+    state = str(meta.get("status") or "unknown")
+    if state == "completed":
+        state = "completed_findings" if findings_count > 0 else "completed_zero_findings"
     pass_status[name] = {
         "status": state,
         "target_count": target_count,
+        "selected_template_count": selected_count,
         "findings_count": findings_count,
-        "output": output.name,
+        "exit_code": int(meta.get("exit_code", 0) or 0),
+        "output": output_name,
+        "log": f"nuclei.{name}.log",
+        "meta": f"nuclei.{name}.meta.json",
     }
 
+errors = read_errors(out / "errors.log")
 all_findings = count_lines(out / "nuclei.jsonl")
+states = {str(value.get("status") or "") for value in pass_status.values()}
+
 if templates_required_missing:
     overall = "failed_templates_missing"
     exit_code = 20
-elif errors or real_rc != 0:
+elif "failed_no_templates_selected" in states:
+    overall = "failed_no_templates_selected"
+    exit_code = 22
+elif "failed_command" in states or errors or real_rc != 0:
     overall = "failed_command"
-    exit_code = 21 if real_rc == 0 else real_rc
-elif all(value["status"] == "skipped_no_targets" for value in pass_status.values()):
-    overall = "skipped_no_targets"
-    exit_code = 0
+    exit_code = real_rc if real_rc != 0 else 21
 elif all_findings > 0:
     overall = "completed_findings"
+    exit_code = 0
+elif all(
+    state.startswith("skipped_") or state in {"disabled_policy", "not_scheduled"}
+    for state in states
+):
+    overall = "skipped_no_targets"
     exit_code = 0
 else:
     overall = "completed_zero_findings"

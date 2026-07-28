@@ -1,0 +1,155 @@
+name: nuclei-runtime-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scanner/run-nuclei-v2.sh'
+      - 'scanner/run-nuclei-closed.sh'
+      - 'scanner/entrypoint.sh'
+      - 'enhanced-worker/nuclei_scan.py'
+      - 'enhanced-worker/install_nuclei.sh'
+      - 'enhanced-worker/Dockerfile'
+      - 'docker-compose.enhanced-worker.yml'
+      - '.github/workflows/nuclei-runtime-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate syntax and explicit template wiring
+        run: |
+          set -Eeuo pipefail
+          bash -n scanner/run-nuclei-v2.sh
+          bash -n scanner/run-nuclei-closed.sh
+          bash -n scanner/entrypoint.sh
+          bash -n enhanced-worker/install_nuclei.sh
+          python3 -m py_compile enhanced-worker/nuclei_scan.py
+          grep -Fq 'nuclei -ut -ud "$TEMPLATE_DIR"' scanner/run-nuclei-v2.sh
+          grep -Fq 'nuclei -ut -ud "$TEMPLATE_ROOT"' scanner/entrypoint.sh
+          grep -Fq 'self._append_flag_value(command, "-t", self.template_dir)' enhanced-worker/nuclei_scan.py
+          grep -Fq 'failed_templates_missing' enhanced-worker/nuclei_scan.py
+          grep -Fq 'failed_command' enhanced-worker/nuclei_scan.py
+          grep -Fq 'ARL_NUCLEI_STATUS_DIR' docker-compose.enhanced-worker.yml
+
+      - name: Test ARL adapter success and failure evidence
+        run: |
+          set -Eeuo pipefail
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/bin" "$tmp/templates" "$tmp/status" "$tmp/work"
+          cat >"$tmp/templates/test.yaml" <<'YAML'
+          id: test-template
+          info:
+            name: Test template
+            author: regression
+            severity: high
+          http:
+            - method: GET
+              path:
+                - '{{BaseURL}}/'
+              matchers:
+                - type: status
+                  status: [200]
+          YAML
+          cat >"$tmp/bin/nuclei" <<'SH'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          if [[ "${1:-}" == "-version" ]]; then
+            echo 'Nuclei Engine Version: v3.11.0'
+            exit 0
+          fi
+          if [[ "${1:-}" == "-h" ]]; then
+            echo '-jsonl -json -t -tags -exclude-tags -severity -type -rate-limit -bulk-size -timeout -retries -stats -stats-json -stats-interval -duc -no-color'
+            exit 0
+          fi
+          output=''
+          while (($#)); do
+            if [[ "$1" == "-o" ]]; then
+              output="$2"
+              shift 2
+            else
+              shift
+            fi
+          done
+          rc="${FAKE_NUCLEI_RC:-0}"
+          if [[ "$rc" == 0 ]]; then
+            printf '%s\n' '{"template-id":"test-template","info":{"name":"Test template","severity":"high"},"matched-at":"https://example.test/","host":"https://example.test"}' >"$output"
+          fi
+          exit "$rc"
+          SH
+          chmod +x "$tmp/bin/nuclei"
+
+          TMP_ROOT="$tmp" python3 - <<'PY'
+          import importlib.util
+          import json
+          import os
+          import sys
+          import types
+          import uuid
+          from pathlib import Path
+
+          root = Path(os.environ["TMP_ROOT"])
+          app = types.ModuleType("app")
+          config = types.ModuleType("app.config")
+          utils = types.ModuleType("app.utils")
+
+          class Config:
+              TMP_PATH = str(root / "work")
+
+          class Logger:
+              def debug(self, *args, **kwargs): pass
+              def info(self, *args, **kwargs): pass
+              def warning(self, *args, **kwargs): pass
+              def error(self, *args, **kwargs): pass
+              def exception(self, *args, **kwargs): pass
+
+          config.Config = Config
+          utils.get_logger = lambda: Logger()
+          utils.random_choices = lambda: uuid.uuid4().hex[:12]
+          utils.curr_date = lambda: "2026-07-28 00:00:00"
+          app.config = config
+          app.utils = utils
+          sys.modules["app"] = app
+          sys.modules["app.config"] = config
+          sys.modules["app.utils"] = utils
+
+          os.environ["PATH"] = str(root / "bin") + os.pathsep + os.environ["PATH"]
+          os.environ["ARL_NUCLEI_TEMPLATE_DIR"] = str(root / "templates")
+          os.environ["ARL_NUCLEI_TEMPLATE_MIN_COUNT"] = "1"
+          os.environ["ARL_NUCLEI_STATUS_DIR"] = str(root / "status")
+
+          spec = importlib.util.spec_from_file_location(
+              "nuclei_scan", "enhanced-worker/nuclei_scan.py"
+          )
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          findings = module.NucleiScan(["https://example.test"]).run()
+          assert len(findings) == 1, findings
+
+          os.environ["FAKE_NUCLEI_RC"] = "7"
+          findings = module.NucleiScan(["https://example.test"]).run()
+          assert findings == [], findings
+
+          for item in (root / "templates").glob("*.yaml"):
+              item.unlink()
+          os.environ.pop("FAKE_NUCLEI_RC", None)
+          findings = module.NucleiScan(["https://example.test"]).run()
+          assert findings == [], findings
+
+          payloads = [
+              json.loads(path.read_text())
+              for path in (root / "status").glob("*.status.json")
+              if path.name != "latest.status.json"
+          ]
+          by_status = {item["status"]: item for item in payloads}
+          assert by_status["completed_findings"]["template_count"] == 1, by_status
+          assert by_status["failed_command"]["exit_code"] == 7, by_status
+          assert "failed_templates_missing" in by_status, by_status
+          print("nuclei-adapter-runtime-contract-ok")
+          PY
