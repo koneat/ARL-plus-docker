@@ -101,13 +101,14 @@ ensure_templates() {
   fi
 
   : >"$OUT/nuclei.official.templates.txt"
-  if ! nuclei -tl -silent -t "$TEMPLATE_DIR" \
-      -exclude-tags "${NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}" \
-      >"$OUT/nuclei.official.templates.txt" 2>"$OUT/nuclei-template-list.log"; then
-    local rc=$?
-    log "ERROR: 无法加载官方模板，rc=${rc}"
-    printf 'Nuclei 官方模板加载\trc=%s\n' "$rc" >>"$ERROR_LOG"
-    return "$rc"
+  local list_rc=0
+  nuclei -tl -silent -t "$TEMPLATE_DIR" \
+    -exclude-tags "${NUCLEI_EXCLUDE_TAGS:-dos,fuzz,intrusive,bruteforce}" \
+    >"$OUT/nuclei.official.templates.txt" 2>"$OUT/nuclei-template-list.log" || list_rc=$?
+  if (( list_rc != 0 )); then
+    log "ERROR: 无法加载官方模板，rc=${list_rc}"
+    printf 'Nuclei 官方模板加载\trc=%s\n' "$list_rc" >>"$ERROR_LOG"
+    return "$list_rc"
   fi
 
   local selected
