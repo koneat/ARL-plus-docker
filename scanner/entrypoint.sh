@@ -54,8 +54,8 @@ if enabled "${ENABLE_NUCLEI:-true}"; then
   if enabled "${UPDATE_TEMPLATES:-true}"; then
     check_writable_dir 'Nuclei 模板目录' "$TEMPLATE_ROOT"
     set +e
-    timeout "${TEMPLATE_UPDATE_TIMEOUT}s" \
-      nuclei -ut -ud "$TEMPLATE_ROOT" >/tmp/nuclei-template-update.log 2>&1
+    timeout "${TEMPLATE_UPDATE_TIMEOUT}s" nuclei -ut -ud "$TEMPLATE_ROOT" \
+      >/tmp/nuclei-template-update.log 2>&1
     rc=$?
     set -e
     if [[ "$rc" -ne 0 ]]; then
